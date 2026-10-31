@@ -1,15 +1,16 @@
 {% extends "base.html" %}
-{% block title %}Истина — знакомство для никаха без фото{% endblock %}
+{% block title %}Никах Истина — знакомство для никаха по номеру анкеты, без имён и фото{% endblock %}
 {% block robots %}index, follow{% endblock %}
 {% block main %}
 {% set has_profile = user and user.profile %}
 <main id="main" class="landing">
   <section class="hero" aria-labelledby="hero-title">
     <div class="container hero__inner">
+      <img class="hero__logo" src="{{ static_url('img/logo@2x.png') }}" width="340" height="340" alt="Эмблема «Никах Истина»: брат и сестра без лиц под аркой">
       <div>
-        <span class="eyebrow">Никах-платформа «Истина»</span>
-        <h1 id="hero-title">Знакомство для никаха&nbsp;— без фото, с&nbsp;уважением и&nbsp;по&nbsp;Шариату</h1>
-        <p class="hero__lead">Анкеты без фотографий, переписка только после взаимного согласия, вали может видеть всю переписку. Сайт и Telegram-бот — одна система: начните там, где удобнее.</p>
+        <span class="eyebrow">Сайт и бот @{{ settings.BOT_USERNAME }}</span>
+        <h1 id="hero-title">Знакомство для никаха&nbsp;— по&nbsp;номеру анкеты, без имён и&nbsp;фото</h1>
+        <p class="hero__lead">Переписка только после взаимного согласия и&nbsp;под присмотром свидетеля, вали может видеть всю переписку. Сайт и&nbsp;Telegram-бот — одна система: начните там, где удобнее.</p>
         <div class="hero__actions">
           {% if has_profile %}
           <a class="btn btn-accent btn-lg" href="/catalog">Перейти к анкетам {{ m.icon('arrow-right') }}</a>
@@ -20,22 +21,6 @@
         </div>
         <p class="hero__note">{{ m.icon('lock', 'icon--sm') }} Данные хранятся на серверах в России</p>
       </div>
-      <svg class="hero__ornament" viewBox="0 0 200 200" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-linejoin="round">
-        <g stroke-width="1.6">
-          <rect x="45" y="45" width="110" height="110" rx="3"/>
-          <rect x="45" y="45" width="110" height="110" rx="3" transform="rotate(45 100 100)"/>
-        </g>
-        <g stroke-width="1" opacity="0.7">
-          <rect x="66" y="66" width="68" height="68" rx="2"/>
-          <rect x="66" y="66" width="68" height="68" rx="2" transform="rotate(45 100 100)"/>
-          <circle cx="100" cy="100" r="97"/>
-          <circle cx="100" cy="100" r="20"/>
-        </g>
-        <g stroke-width="0.8" opacity="0.45">
-          <rect x="32" y="32" width="136" height="136" rx="4"/>
-          <rect x="32" y="32" width="136" height="136" rx="4" transform="rotate(45 100 100)"/>
-        </g>
-      </svg>
     </div>
   </section>
 
@@ -53,7 +38,14 @@
     </div>
   </div>
 
-  <div class="container">{% include "partials/flashes.html" %}</div>
+  <div class="container landing__notices">
+    {% include "partials/flashes.html" %}
+    {% if user and user.consent_at is none %}
+    {% call m.alert('warning', 'Нужно ваше согласие') %}<p>Бот стал частью платформы «сайт + бот»{% if user.profile %}, ваша {{ profile_title(user.profile) }} и чаты сохранены{% endif %}. Чтобы продолжить, <a href="/welcome">дайте согласие на обработку данных</a>.</p>{% endcall %}
+    {% elif missing %}
+    {{ m.complete_banner(missing) }}
+    {% endif %}
+  </div>
 
   <section class="section" aria-labelledby="how-title">
     <div class="container">
@@ -66,7 +58,7 @@
         <li class="card step">
           <span class="step__num" aria-hidden="true">1</span>
           <h3>Анкета</h3>
-          <p>Короткая анкета без фото: обязательных полей минимум, около двух минут.{% if settings.PREMODERATION %} Модератор проверит её перед публикацией.{% endif %}</p>
+          <p>Короткая анкета без имени и фото — вас знают по номеру «Анкета №…». Около двух минут.{% if settings.PREMODERATION %} Модератор проверит её перед публикацией.{% endif %}</p>
         </li>
         <li class="card step">
           <span class="step__num" aria-hidden="true">2</span>
@@ -76,7 +68,7 @@
         <li class="card step">
           <span class="step__num" aria-hidden="true">3</span>
           <h3>Никах с участием семьи</h3>
-          <p>Общайтесь на сайте или в Telegram, подключите вали. Дальше — знакомство семей и никах, ин шаа Аллах.</p>
+          <p>Общайтесь на сайте или в Telegram — переписку видит свидетель, можно подключить вали. Дальше — знакомство семей и никах, ин шаа Аллах.</p>
         </li>
       </ol>
     </div>
@@ -91,8 +83,8 @@
       <div class="principles">
         <article class="card principle">
           <div class="principle__icon">{{ m.icon('image-off') }}</div>
-          <h3>Без фото</h3>
-          <p>У всех вместо фотографии — безликий силуэт. Сначала характер, намерения и ценности.</p>
+          <h3>По номеру анкеты, без имён и фото</h3>
+          <p>Знакомство по номеру анкеты: «Анкета №512 — Сестра». Ни имён, ни фотографий — сначала характер, намерения и ценности.</p>
         </article>
         <article class="card principle">
           <div class="principle__icon">{{ m.icon('heart') }}</div>
@@ -101,23 +93,23 @@
         </article>
         <article class="card principle">
           <div class="principle__icon">{{ m.icon('eye') }}</div>
+          <h3>Переписку видит свидетель</h3>
+          <p>Копии всех сообщений получает свидетель — махрам/администратор. Телефоны, ссылки и @юзернеймы в переписке скрываются фильтром.</p>
+        </article>
+        <article class="card principle">
+          <div class="principle__icon">{{ m.icon('family') }}</div>
           <h3>Вали рядом</h3>
-          <p>Можно подключить вали: он получает копии всей переписки в Telegram, а собеседник видит значок «Вали подключён».</p>
+          <p>Можно подключить своего вали: он получает копии всей переписки в Telegram, а собеседник видит значок «Вали подключён».</p>
         </article>
         <article class="card principle">
           <div class="principle__icon">{{ m.icon('shield') }}</div>
           <h3>Модерация</h3>
-          <p>{% if settings.PREMODERATION %}Каждая анкета проверяется перед публикацией.{% else %}Модератор рассматривает жалобы и анкеты с подозрительными словами.{% endif %} Просьбы о деньгах и мошенничество — повод для блокировки.</p>
+          <p>{% if settings.PREMODERATION %}Каждая анкета проверяется перед публикацией, а смотреть чужие анкеты можно только с одобренной.{% else %}Модератор рассматривает жалобы и анкеты с подозрительными словами.{% endif %} Просьбы о деньгах и мошенничество — повод для блокировки.</p>
         </article>
         <article class="card principle">
           <div class="principle__icon">{{ m.icon('database') }}</div>
-          <h3>Данные в России</h3>
-          <p>Сервер находится в РФ. Сведения о религиозных убеждениях обрабатываются только с вашего отдельного согласия.</p>
-        </article>
-        <article class="card principle">
-          <div class="principle__icon">{{ m.icon('family') }}</div>
-          <h3>Только для никаха</h3>
-          <p>Только 18+ и только свободные для брака. Объявления о многожёнстве и «знакомства ради общения» запрещены.</p>
+          <h3>Только для никаха, данные в России</h3>
+          <p>Только 18+ и свободные для брака. Сервер находится в РФ; сведения о религиозных убеждениях обрабатываются только с вашего отдельного согласия.</p>
         </article>
       </div>
     </div>
@@ -126,8 +118,8 @@
   <section class="section" aria-labelledby="sync-title">
     <div class="container">
       <div class="card card-pad cta-band">
-        <h2 id="sync-title">Сайт и бот @{{ settings.BOT_USERNAME }} — одно целое</h2>
-        <p>Анкета, отклик или сообщение из Telegram-бота сразу видны на сайте, и наоборот. Ответить можно там, где вам удобнее.</p>
+        <h2 id="sync-title">Одна система с ботом @{{ settings.BOT_USERNAME }}</h2>
+        <p>Это тот же бот, которым вы пользовались: анкеты, их номера и переписки перенесены. Анкета, отклик или сообщение из Telegram сразу видны на сайте, и наоборот — отвечайте там, где удобнее.</p>
         <a class="btn btn-secondary" href="https://t.me/{{ settings.BOT_USERNAME }}" target="_blank" rel="noopener">{{ m.icon('send') }} Открыть бот в Telegram</a>
       </div>
     </div>
@@ -141,12 +133,20 @@
       </div>
       <div class="faq">
         <details>
-          <summary>Почему на сайте нет фотографий?{{ m.icon('chevron-down') }}</summary>
-          <div><p>Так мы бережём скромность и защищаем сестёр от сбора фотографий. Вместо фото у всех безликий силуэт. Увидеть друг друга можно позже — на встрече с участием семей.</p></div>
+          <summary>Почему нет имён и фотографий?{{ m.icon('chevron-down') }}</summary>
+          <div><p>Так мы бережём скромность и защищаем сестёр от сбора данных. Каждого знают по номеру анкеты, вместо фото — безликий силуэт. Увидеть друг друга и познакомиться по-настоящему можно позже — на встрече с участием семей.</p></div>
+        </details>
+        <details>
+          <summary>Кто такой свидетель?{{ m.icon('chevron-down') }}</summary>
+          <div><p>Свидетель — махрам/администратор платформы. Он получает копии всех сообщений во всех чатах, может написать обеим сторонам или завершить чат, если правила нарушены. Его сообщения подписаны «Свидетель».</p></div>
         </details>
         <details>
           <summary>Кто такой вали и что он видит?{{ m.icon('chevron-down') }}</summary>
           <div><p>Вали — опекун (обычно отец или брат сестры). В настройках вы создаёте для него ссылку, он подтверждает её в Telegram-боте и получает копии всех ваших переписок. Отключить вали можно в любой момент.</p></div>
+        </details>
+        <details>
+          <summary>Пользуетесь ботом — что изменилось?{{ m.icon('chevron-down') }}</summary>
+          <div><p>Бот работает как раньше, а ваша анкета, её номер и переписки сохранены. На сайте теперь тоже можно смотреть анкеты и переписываться. При первом входе нужно дать согласие на обработку данных, а анкету можно дополнить новыми вопросами — это займёт минуту.</p></div>
         </details>
         <details>
           <summary>Как начать переписку?{{ m.icon('chevron-down') }}</summary>

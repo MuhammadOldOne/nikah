@@ -1,11 +1,25 @@
-{# Chat messages (ascending). Context: messages, me, today (Moscow date). #}
+{# Chat messages (ascending). Context: messages, me, today (Moscow date).
+   Witness messages (no sender) are shown apart and signed «Свидетель»; partner messages can be
+   reported one by one («Пожаловаться»). #}
+{% import "macros.html" as m with context %}
 {% for msg in messages %}
+{% set when %}<time datetime="{{ msg.created_at.isoformat() }}">{% if (msg.created_at|msk('%Y-%m-%d')) == today.isoformat() %}{{ msg.created_at|msk_time }}{% else %}{{ msg.created_at|msk_day_time }}{% endif %}</time>{% endset %}
+{% if msg.is_witness %}
+<li class="msg msg--witness" id="msg-{{ msg.id }}" data-id="{{ msg.id }}" data-author="Свидетель">
+  <div class="msg__label">{{ m.icon('eye', 'icon--sm') }} Свидетель</div>
+  <div class="msg__bubble">{{ msg.text }}</div>
+  <div class="msg__meta">{{ when }}</div>
+</li>
+{% else %}
 {% set mine = msg.sender_id == me.id %}
 <li class="msg{% if mine %} msg--mine{% endif %}" id="msg-{{ msg.id }}" data-id="{{ msg.id }}">
   <div class="msg__bubble">{{ msg.text }}</div>
   <div class="msg__meta">
     {% if msg.origin.value == 'telegram' %}<span class="msg__origin" title="Отправлено из Telegram-бота">✈️ из Telegram</span> ·{% endif %}
-    <time datetime="{{ msg.created_at.isoformat() }}">{% if (msg.created_at|msk('%Y-%m-%d')) == today.isoformat() %}{{ msg.created_at|msk_time }}{% else %}{{ msg.created_at|msk('%d.%m %H:%M') }}{% endif %}</time>
+    {{ when }}
+    {% if mine and msg.contacts_hidden %}· <span class="msg__filtered" title="Телефоны, ссылки и @юзернеймы скрываются фильтром">часть текста скрыта фильтром</span>{% endif %}
+    {% if not mine %}· <a class="msg__report" href="/chats/{{ msg.conversation_id }}/messages/{{ msg.id }}/report">Пожаловаться</a>{% endif %}
   </div>
 </li>
+{% endif %}
 {% endfor %}

@@ -1,0 +1,14 @@
+# nginx mode: the server's existing nginx serves the site (ports 80/443 are already taken).
+# Caddy is not started and the website listens on 127.0.0.1 only; nginx proxies to it with
+# deploy/nginx/nikah.conf. Enable in .env (docs/DEPLOY.md, «Режим nginx»):
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.nginx.yml
+services:
+  web:
+    ports:
+      # Loopback only: the site is reachable from outside only through nginx (HTTPS).
+      - "127.0.0.1:${WEB_HOST_PORT:-8000}:8000"
+
+  caddy:
+    # A profile nobody activates: Caddy stays off in this mode. Never name it on the command line
+    # (`docker compose up caddy` would start it and fight nginx for ports 80/443).
+    profiles: ["caddy-off"]

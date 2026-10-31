@@ -1,7 +1,14 @@
 """Callback data of inline buttons.
 
-Callback data comes from the client and is never trusted: it carries only IDs and enum values,
-and handlers re-check every rule through app.services (and admin rights in admin handlers).
+Callback data comes from the client and is never trusted: it carries only IDs, profile numbers
+and enum values, and handlers re-check every rule through app.services (and admin rights in admin
+and witness handlers). People are referred to by profile number, never by ``users.id``.
+
+Buttons that exist in the legacy bot keep its exact format, so the buttons still on people's
+screens keep working (docs/LEGACY_BOT.md §3): ``int:acc:<interest_id>`` / ``int:dec:<id>``
+(InterestCb), ``rep:<message_id>`` (MessageReportCb), ``w:flag|say|close:<id>`` (WitnessCb),
+``adm:appr|rej:<profile number>`` (LegacyReviewCb), ``chat:close`` (LEGACY_CHAT_CLOSE); the
+legacy ``br:*`` and ``reg:*`` buttons are recognised by prefix (handlers.legacy).
 """
 
 from __future__ import annotations
@@ -12,12 +19,17 @@ from aiogram.filters.callback_data import CallbackData
 
 from app.enums import ReportAction, ReportReason
 
-CANCEL = "cancel"  # generic "✖️ Отмена" for any flow
+CANCEL = "cancel"  # generic «Отмена» for any flow
 REPORT_SEND = "report_send"  # send a report without a comment
+GIVE_CONSENT = "give_consent"  # the consent prompt shown to accounts migrated from the legacy bot
+LEGACY_CHAT_CLOSE = "chat:close"  # legacy «Завершить общение»: the only open chat
+LEGACY_BROWSE_PREFIX = "br:"
+LEGACY_REGISTRATION_PREFIX = "reg:"
 
 
 class ProfileAction(StrEnum):
     CREATE = "create"
+    RULES_OK = "rules"  # registration: «Согласен(на) с правилами»
     EDIT = "edit"
     HIDE = "hide"
     SHOW = "show"
@@ -26,6 +38,7 @@ class ProfileAction(StrEnum):
     CONSENT = "consent"
     ADULT = "adult"
     MORE = "more"  # editing: change another field
+    COMPLETE = "complete"  # «Дополнить анкету (1 минута)»
 
 
 class FieldAction(StrEnum):
@@ -37,7 +50,10 @@ class FieldAction(StrEnum):
 
 
 class CatalogAction(StrEnum):
+    PREV = "prev"
     NEXT = "next"
+    NOOP = "noop"  # the «N/M» counter
+    CLOSE = "close"
     RESTART = "restart"
     INTEREST = "interest"
     NO_MESSAGE = "nomsg"
@@ -49,8 +65,8 @@ class CatalogAction(StrEnum):
 
 
 class InterestAction(StrEnum):
-    ACCEPT = "accept"
-    DECLINE = "decline"
+    ACCEPT = "acc"  # legacy format int:acc:<id>
+    DECLINE = "dec"  # legacy format int:dec:<id>
     CANCEL = "cancel"
 
 
@@ -60,6 +76,17 @@ class ChatAction(StrEnum):
     CLOSE = "close"
     CLOSE_CONFIRM = "closeok"
     REPORT = "report"
+
+
+class WitnessAction(StrEnum):
+    FLAG = "flag"  # target: message id
+    SAY = "say"  # target: conversation id
+    CLOSE = "close"  # target: conversation id
+
+
+class LegacyReviewAction(StrEnum):
+    APPROVE = "appr"
+    REJECT = "rej"
 
 
 class SettingsAction(StrEnum):
@@ -100,14 +127,28 @@ class FieldCb(CallbackData, prefix="pf"):
     value: str = ""
 
 
+class FillCb(CallbackData, prefix="fill"):
+    """«Дополнить анкету»: one press saves one missing field (stateless: survives restarts)."""
+
+    field: str
+    value: str
+
+
 class CatalogCb(CallbackData, prefix="cat"):
     action: CatalogAction
-    user_id: int = 0
+    number: int = 0  # profile number of the card
+    page: int = 0  # 1-based position of the card when it was shown
 
 
-class ReportCb(CallbackData, prefix="rep"):
-    user_id: int
+class ReportCb(CallbackData, prefix="rr"):
+    number: int
     reason: ReportReason
+
+
+class MessageReportCb(CallbackData, prefix="rep"):
+    """«Пожаловаться» under a relayed chat message (legacy format rep:<message_id>)."""
+
+    message_id: int
 
 
 class InterestCb(CallbackData, prefix="int"):
@@ -118,6 +159,18 @@ class InterestCb(CallbackData, prefix="int"):
 class ChatCb(CallbackData, prefix="chat"):
     action: ChatAction
     conversation_id: int
+
+
+class WitnessCb(CallbackData, prefix="w"):
+    action: WitnessAction
+    target_id: int
+
+
+class LegacyReviewCb(CallbackData, prefix="adm"):
+    """Legacy moderation buttons «Одобрить» / «Отклонить» under cards sent by the old bot."""
+
+    action: LegacyReviewAction
+    number: int
 
 
 class SettingsCb(CallbackData, prefix="set"):

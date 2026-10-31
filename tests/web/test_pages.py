@@ -103,7 +103,17 @@ async def test_styled_404_page(client):
 
 
 async def test_private_pages_redirect_anonymous_users_to_login(client):
-    for path in ("/catalog", "/interests", "/chats", "/me", "/settings", "/profile/new", "/u/1"):
+    for path in (
+        "/catalog",
+        "/interests",
+        "/chats",
+        "/me",
+        "/me/complete",
+        "/settings",
+        "/profile/new",
+        "/p/500",
+        "/welcome",
+    ):
         response = await client.get(path)
         assert response.status_code == 303, path
         assert response.headers["location"].startswith("/login?next=")
@@ -168,11 +178,12 @@ async def test_out_of_range_ids_are_bad_requests(client, login_client, make_prof
     profile = await make_profile()
     login_client(client, profile.user)
     huge = "99999999999999999999"
-    for path in (f"/u/{huge}", f"/chats/{huge}", f"/chats/1/messages?after_id={huge}", "/u/9223372036854775808"):
+    for path in (f"/p/{huge}", f"/chats/{huge}", f"/chats/1/messages?after_id={huge}", "/p/2147483648"):
         response = await client.get(path)
         assert response.status_code == 400, path
         assert "Неверный запрос" in response.text
-    assert (await client.get("/u/9223372036854775807")).status_code == 404
+    assert (await client.get("/p/2147483647")).status_code == 404
+    assert (await client.get("/chats/9223372036854775807")).status_code == 404
     assert not [record for record in caplog.records if record.levelname == "ERROR"]
 
 

@@ -3,15 +3,15 @@
 {% block content %}
 <h1>Пользователи</h1>
 <form method="get" action="/admin/users" class="adm-search" role="search">
-  <label for="q">Найти по #id, Telegram ID или @username</label>
+  <label for="q">Найти по номеру анкеты, Telegram ID или @username</label>
   <div class="adm-search__row">
-    <input id="q" name="q" type="search" value="{{ q }}" maxlength="100" placeholder="#123, 123456789 или @username" autocomplete="off">
+    <input id="q" name="q" type="search" value="{{ q }}" maxlength="100" placeholder="№512, 123456789 или @username" autocomplete="off">
     <button type="submit" class="adm-btn">Найти</button>
   </div>
 </form>
 
 {% if invalid_query %}
-<p class="adm-flash adm-flash--error">Не понимаю запрос. Введите #id, числовой Telegram ID или @username.</p>
+<p class="adm-flash adm-flash--error">Не понимаю запрос. Введите номер анкеты (№512 или #512), числовой Telegram ID или @username.</p>
 {% elif q %}
 {% if users %}
 <div class="adm-scroll">

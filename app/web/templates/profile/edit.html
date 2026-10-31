@@ -1,20 +1,20 @@
 {% extends "base.html" %}
 {% import "profile/_fields.html" as f with context %}
-{% block title %}Редактирование анкеты — Истина{% endblock %}
+{% block title %}Редактирование анкеты — Никах Истина{% endblock %}
 {% block container_class %}container--form{% endblock %}
 {% block content %}
 <a class="back-link" href="/me">{{ m.icon('arrow-left', 'icon--sm') }} Моя анкета</a>
 <div class="page-head">
   <div>
     <h1>Редактирование анкеты</h1>
-    <p class="muted">{{ gendered(gender, 'Брат', 'Сестра') }} · пол изменить нельзя.</p>
+    <p class="muted">{{ profile_title(user.profile) }} — {{ gendered(gender, 'Брат', 'Сестра') }} · пол изменить нельзя.</p>
   </div>
 </div>
 <div class="stack">
   {% if errors %}
   {% call m.alert('error', 'Проверьте анкету') %}<p>Некоторые поля заполнены неверно — они отмечены ниже.</p>{% endcall %}
   {% elif settings.PREMODERATION %}
-  {% call m.alert('info') %}<p>После сохранения изменений анкета снова пройдёт модерацию и до проверки не будет видна в каталоге.</p>{% endcall %}
+  {% call m.alert('info') %}<p>Если изменить город, национальность, род занятий, «о себе» или пожелания, анкета снова пройдёт модерацию и до проверки не будет видна в каталоге. Остальные поля сохраняются сразу.</p>{% endcall %}
   {% endif %}
   <form class="stack" method="post" action="/me/edit">
     {{ m.csrf_field() }}

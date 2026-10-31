@@ -19,11 +19,19 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from app.config import get_settings
 from app.db import dispose_engine
 from app.logutil import exc_summary
-from app.services.errors import DomainError, NotFound
+from app.services.errors import ConsentRequired, DomainError, NotFound
 from app.web.broker import EventBroker
-from app.web.deps import AccountBanned, RedirectTo, SessionDep, is_partial, logout_user, verify_csrf
+from app.web.deps import (
+    AccountBanned,
+    RedirectTo,
+    SessionDep,
+    consent_redirect_url,
+    is_partial,
+    logout_user,
+    verify_csrf,
+)
 from app.web.render import toast_response
-from app.web.routes import admin, auth, catalog, chats, interests, legal, live, profile, public
+from app.web.routes import admin, auth, catalog, chats, consent, interests, legal, live, profile, public
 from app.web.routes import settings as settings_routes
 from app.web.security import SecurityHeadersMiddleware, install_access_log_redaction
 from app.web.templating import templates
@@ -110,6 +118,11 @@ async def _validation_error(request: Request, exc: Exception) -> Response:
     return _error_page(request, 400)
 
 
+async def _consent_required(request: Request, exc: Exception) -> Response:
+    """A service asked for consent (e.g. it was missing when an action started): the consent page."""
+    return await _redirect(request, RedirectTo(consent_redirect_url(request)))
+
+
 async def _domain_error(request: Request, exc: Exception) -> Response:
     """Safety net for business-rule errors that a route did not handle itself."""
     assert isinstance(exc, DomainError)
@@ -158,7 +171,7 @@ async def robots_txt() -> PlainTextResponse:
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
-        title="Истина",
+        title="Никах Истина",
         lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
@@ -180,11 +193,12 @@ def create_app() -> FastAPI:
     app.add_exception_handler(RedirectTo, _redirect)
     app.add_exception_handler(StarletteHTTPException, _http_error)
     app.add_exception_handler(RequestValidationError, _validation_error)
+    app.add_exception_handler(ConsentRequired, _consent_required)
     app.add_exception_handler(DomainError, _domain_error)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.add_api_route("/healthz", healthz, methods=["GET"], include_in_schema=False)
     app.add_api_route("/robots.txt", robots_txt, methods=["GET"], include_in_schema=False)
-    for module in (public, auth, profile, catalog, interests, chats, live, settings_routes, admin, legal):
+    for module in (public, auth, consent, profile, catalog, interests, chats, live, settings_routes, admin, legal):
         app.include_router(module.router)
     install_access_log_redaction()
     return app

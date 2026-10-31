@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% import "profile/_fields.html" as f with context %}
-{% block title %}Создание анкеты — Истина{% endblock %}
+{% block title %}Создание анкеты — Никах Истина{% endblock %}
 {% block head %}<script src="{{ static_url('js/wizard.js') }}" defer></script>{% endblock %}
 {% block container_class %}container--form{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
     <h1>Анкета для никаха</h1>
-    <p class="muted">Около двух минут. Поля со <span class="req">*</span> обязательны, остальное — по желанию. Фото не нужно.</p>
+    <p class="muted">Около двух минут. Поля со <span class="req">*</span> обязательны, остальное — по желанию. Ни имени, ни фото не нужно: вас будут знать по номеру анкеты.</p>
   </div>
 </div>
 
@@ -74,7 +74,7 @@
       </fieldset>
 
       {% if settings.PREMODERATION %}
-      <p class="hint mb-0">{{ m.icon('shield', 'icon--sm') }} После отправки анкету проверит модератор. Смотреть чужие анкеты можно будет сразу.</p>
+      <p class="hint mb-0">{{ m.icon('shield', 'icon--sm') }} После отправки анкету проверит модератор. Смотреть чужие анкеты и откликаться можно будет после одобрения — так мы защищаем сестёр от фейковых анкет.</p>
       {% endif %}
     </div>
     <div class="wizard-nav">

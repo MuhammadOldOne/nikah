@@ -1,11 +1,20 @@
 """Profiles (анкеты): creation, editing, moderation, catalog.
 
+A profile is known by its number («Анкета №512», ``profiles.number``).
+
 Status rules (PREMODERATION on):
 - create -> pending (``profile.submitted``); with PREMODERATION off -> active at once;
-- edit of an active or rejected profile -> pending again; edit of a pending profile re-submits it;
-  edit of a hidden profile keeps it hidden but clears approval, so ``show`` sends it to moderation;
+- an edit that changes free text (PROFILE_FREE_TEXT_FIELDS) of an active or rejected profile ->
+  pending again; of a pending profile -> re-submitted; of a hidden profile -> stays hidden but
+  loses approval, so ``show`` sends it to moderation. Edits of choices and numbers only (e.g.
+  completing a migrated profile) keep the status and the approval; a rejected profile is
+  re-submitted by any edit;
 - approve: pending -> active; reject: pending/active/hidden -> rejected (``profile.moderated``);
 - hide: active/pending -> hidden; show: hidden -> active (or pending if not approved).
+
+Gating (PREMODERATION on, as in the legacy bot): browsing the catalog and opening profiles other
+than one's own or a counterpart's need consent and the viewer's own ACTIVE profile; sending an
+interest always needs an ACTIVE profile (services.interests).
 """
 
 from __future__ import annotations
@@ -14,7 +23,7 @@ from datetime import timedelta
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import ColumnElement, and_, exists, func, or_, select
+from sqlalchemy import ColumnElement, and_, exists, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -23,13 +32,25 @@ from app.clock import current_year, utcnow
 from app.config import get_settings
 from app.enums import Gender, InterestStatus, ProfileStatus
 from app.models import Conversation, Interest, Profile, User
-from app.schemas import CatalogFilters, ModerationNoteIn, ProfileCreate, ProfileUpdate, first_error
+from app.schemas import (
+    PROFILE_FREE_TEXT_FIELDS,
+    PROFILE_REQUIRED_FIELDS,
+    CatalogFilters,
+    ModerationNoteIn,
+    ProfileCreate,
+    ProfileUpdate,
+    first_error,
+)
 from app.services import events
 from app.services.errors import (
     ConsentRequired,
     InvalidInput,
     ProfileAlreadyExists,
+    ProfileHidden,
+    ProfileNotActive,
     ProfileNotFound,
+    ProfilePending,
+    ProfileRejected,
     ProfileRequired,
     ProfileStateError,
     ProfileSubmissionLimitReached,
@@ -45,7 +66,11 @@ MAX_PER_PAGE = 50
 # Every submission sends a moderation card to every admin in Telegram.
 SUBMISSIONS_PER_HOUR = 5
 SUBMISSION_WINDOW = timedelta(hours=1)
-_FLAGGED_FIELDS = ("name", "city", "occupation", "nationality", "wishes", "about")
+_NOT_ACTIVE_ERRORS: dict[ProfileStatus, type[ProfileNotActive]] = {
+    ProfileStatus.PENDING: ProfilePending,
+    ProfileStatus.REJECTED: ProfileRejected,
+    ProfileStatus.HIDDEN: ProfileHidden,
+}
 
 
 def _city_key(column: Any) -> ColumnElement[str]:
@@ -54,7 +79,7 @@ def _city_key(column: Any) -> ColumnElement[str]:
 
 
 def _apply_flags(profile: Profile) -> None:
-    reason = flag_reason(*(getattr(profile, name) for name in _FLAGGED_FIELDS))
+    reason = flag_reason(*(getattr(profile, name) for name in PROFILE_FREE_TEXT_FIELDS))
     profile.flagged = reason is not None
     profile.flag_reason = reason
 
@@ -93,6 +118,47 @@ async def get_profile_by_user(session: AsyncSession, user: User) -> Profile | No
     return await get_profile(session, user.id)
 
 
+async def get_profile_by_number(session: AsyncSession, number: int) -> Profile | None:
+    """Profile by its public number («Анкета №512»), with ``user`` loaded; no visibility checks."""
+    return await session.scalar(select(Profile).where(Profile.number == number).options(selectinload(Profile.user)))
+
+
+async def advance_number_sequence(session: AsyncSession, floor: int = 0) -> int:
+    """For the legacy import, after inserting profiles with explicit numbers: move the numbering past
+    max(profiles.number, ``floor``) (never back), so no number is ever issued twice. Returns the
+    number the next new profile will get."""
+    return await session.scalar(
+        text(
+            "SELECT setval('profiles_number_seq', GREATEST("
+            "(SELECT COALESCE(MAX(number), 0) FROM profiles), CAST(:floor AS bigint), "
+            "(SELECT CASE WHEN is_called THEN last_value ELSE last_value - 1 END FROM profiles_number_seq))) + 1"
+        ),
+        {"floor": floor},
+    )
+
+
+def missing_fields(profile: Profile) -> list[str]:
+    """Required fields (schemas.PROFILE_REQUIRED_FIELDS order) that are empty: profiles migrated
+    from the legacy bot lack marital status, children, education and employment. An incomplete
+    profile stays in the catalog (empty fields show as «не указано»); its owner is offered
+    «Дополнить анкету»."""
+    return [name for name in PROFILE_REQUIRED_FIELDS if getattr(profile, name) in (None, "")]
+
+
+def is_complete(profile: Profile) -> bool:
+    return not missing_fields(profile)
+
+
+def require_active(profile: Profile | None) -> Profile:
+    """The profile if it is ACTIVE; otherwise ProfileRequired or the ProfileNotActive subclass
+    that says why (ProfilePending / ProfileRejected / ProfileHidden)."""
+    if profile is None:
+        raise ProfileRequired()
+    if profile.status != ProfileStatus.ACTIVE:
+        raise _NOT_ACTIVE_ERRORS[profile.status]()
+    return profile
+
+
 async def create_profile(session: AsyncSession, user: User, data: ProfileCreate) -> Profile:
     """Create the user's profile. Requires recorded consent (users.set_consent)."""
     if user.is_banned:
@@ -114,26 +180,36 @@ async def create_profile(session: AsyncSession, user: User, data: ProfileCreate)
 
 
 async def update_profile(session: AsyncSession, user: User, data: ProfileUpdate) -> Profile:
-    """Apply the fields set in ``data`` (see module docstring for status changes)."""
+    """Apply the fields set in ``data`` (see the module docstring for status changes).
+
+    Only ``data``'s fields were validated (``ProfileUpdate.from_form`` for full forms), so a
+    migrated profile whose legacy texts predate the current rules can still be completed."""
     if user.is_banned:
         raise UserBanned()
+    if user.consent_at is None:
+        raise ConsentRequired()
     profile = await get_profile(session, user.id)
     if profile is None:
         raise ProfileRequired()
     changes = {name: value for name, value in data.changes().items() if getattr(profile, name) != value}
     if not changes:
         return profile
-    if profile.status != ProfileStatus.HIDDEN:
+    text_changed = not changes.keys().isdisjoint(PROFILE_FREE_TEXT_FIELDS)
+    resubmit = profile.status == ProfileStatus.REJECTED or (
+        text_changed and profile.status in (ProfileStatus.ACTIVE, ProfileStatus.PENDING)
+    )
+    if resubmit:
         await _check_submission_rate(session, user.id)
     for name, value in changes.items():
         setattr(profile, name, value)
-    _apply_flags(profile)
-    if profile.status == ProfileStatus.HIDDEN:
-        if get_settings().PREMODERATION:
-            profile.approved_at = None
-        await session.flush()
-    else:
+    if text_changed:
+        _apply_flags(profile)
+    if resubmit:
         await _submit(session, profile)
+        return profile
+    if text_changed and profile.status == ProfileStatus.HIDDEN and get_settings().PREMODERATION:
+        profile.approved_at = None
+    await session.flush()
     return profile
 
 
@@ -153,6 +229,8 @@ async def show(session: AsyncSession, user: User) -> Profile:
     """Show a hidden profile again (back to moderation if its content is not approved)."""
     if user.is_banned:
         raise UserBanned()
+    if user.consent_at is None:
+        raise ConsentRequired()
     profile = await get_profile(session, user.id)
     if profile is None:
         raise ProfileRequired()
@@ -257,6 +335,23 @@ async def _viewer_profile(session: AsyncSession, viewer: User) -> Profile:
     return profile
 
 
+def _browse_gate_error(viewer: User, own: Profile) -> ConsentRequired | ProfileNotActive | None:
+    """Why ``viewer`` may not browse other people's profiles, or None."""
+    if viewer.consent_at is None:
+        return ConsentRequired()
+    if get_settings().PREMODERATION and own.status != ProfileStatus.ACTIVE:
+        return _NOT_ACTIVE_ERRORS[own.status]()
+    return None
+
+
+async def _browsing_profile(session: AsyncSession, viewer: User) -> Profile:
+    """The viewer's own profile if they may browse the catalog (see the module docstring)."""
+    own = await _viewer_profile(session, viewer)
+    if error := _browse_gate_error(viewer, own):
+        raise error
+    return own
+
+
 def _catalog_conditions(viewer: User, own: Profile, filters: CatalogFilters) -> list[ColumnElement[bool]]:
     conditions = _visible_to(viewer.id, own.gender)
     year = current_year()
@@ -284,9 +379,10 @@ async def list_catalog(
 ) -> tuple[list[Profile], int]:
     """A page of profiles visible to ``viewer`` (newest approved first) and the total count.
 
-    The viewer needs a profile in any status (pending users may browse). Items have ``user`` loaded.
+    The viewer needs consent and, with PREMODERATION on, an ACTIVE profile (ProfileRequired /
+    ConsentRequired / ProfilePending / ProfileRejected / ProfileHidden). Items have ``user`` loaded.
     """
-    own = await _viewer_profile(session, viewer)
+    own = await _browsing_profile(session, viewer)
     page = max(page, 1)
     per_page = max(1, min(per_page, MAX_PER_PAGE))
     conditions = _catalog_conditions(viewer, own, filters or CatalogFilters())
@@ -307,7 +403,7 @@ async def catalog_position(
     """1-based position of ``user_id`` in the viewer's catalog (``list_catalog`` order), or None if
     the profile is no longer in it (reported, hidden, filtered out…). Lets one-card browsing (the
     bot) continue after the card it showed, even when the list changed meanwhile."""
-    own = await _viewer_profile(session, viewer)
+    own = await _browsing_profile(session, viewer)
     conditions = _catalog_conditions(viewer, own, filters or CatalogFilters())
     visible = select(Profile).join(User, User.id == Profile.user_id).where(*conditions)
     target = await session.scalar(visible.where(Profile.user_id == user_id))
@@ -325,13 +421,15 @@ async def catalog_position(
 
 
 async def get_viewable_profile(session: AsyncSession, viewer: User, user_id: int) -> Profile:
-    """A profile ``viewer`` may open (``/u/{id}``, bot ``p_<id>``), with ``user`` loaded.
+    """A profile ``viewer`` may open (``/p/{number}``, bot ``p_<number>``), with ``user`` loaded.
 
-    Allowed: one's own profile; a catalog-visible profile; or the profile of someone the viewer
-    has a pending/accepted interest or a conversation with (unless that user is banned) — also when
-    hidden by its owner, but never content a moderator has not approved: an edited (pending) or
-    rejected counterpart raises ProfileUnderReview. Raises ProfileNotFound otherwise,
-    ProfileRequired if the viewer has no profile.
+    Allowed: one's own profile; a catalog-visible profile (only while the viewer may browse: the
+    gate errors of ``list_catalog`` are raised instead of ProfileNotFound); or the profile of a
+    counterpart — someone the viewer has a pending/accepted interest or a conversation with
+    (unless that user is banned), whatever the viewer's own status — also when hidden by its
+    owner, but never content a moderator has not approved: an edited (pending) or rejected
+    counterpart raises ProfileUnderReview. Raises ProfileNotFound otherwise, ProfileRequired if
+    the viewer has no profile.
     """
     if user_id == viewer.id:
         own = await get_profile(session, viewer.id)
@@ -339,6 +437,7 @@ async def get_viewable_profile(session: AsyncSession, viewer: User, user_id: int
             raise ProfileRequired()
         return own
     own = await _viewer_profile(session, viewer)
+    gate_error = _browse_gate_error(viewer, own)
     connected = or_(
         exists().where(
             or_(
@@ -352,21 +451,29 @@ async def get_viewable_profile(session: AsyncSession, viewer: User, user_id: int
             Conversation.user_b_id == max(viewer.id, user_id),
         ),
     )
+    allowed = connected if gate_error is not None else or_(and_(*_visible_to(viewer.id, own.gender)), connected)
     profile = await session.scalar(
         select(Profile)
         .join(User, User.id == Profile.user_id)
-        .where(
-            Profile.user_id == user_id,
-            User.is_banned.is_(False),
-            or_(and_(*_visible_to(viewer.id, own.gender)), connected),
-        )
+        .where(Profile.user_id == user_id, User.is_banned.is_(False), allowed)
         .options(selectinload(Profile.user))
     )
     if profile is None:
-        raise ProfileNotFound()
+        raise gate_error or ProfileNotFound()
     if not has_approved_content(profile):
         raise ProfileUnderReview()
     return profile
+
+
+async def get_viewable_profile_by_number(session: AsyncSession, viewer: User, number: int) -> Profile:
+    """``get_viewable_profile`` by public number (``/p/{number}``, bot ``p_<number>``): the same
+    rules and errors; an unknown number is ProfileNotFound after the same viewer checks, so a
+    caller cannot tell an unknown number from a profile it may not see."""
+    user_id = await session.scalar(select(Profile.user_id).where(Profile.number == number))
+    if user_id is None:
+        own = await _viewer_profile(session, viewer)
+        raise _browse_gate_error(viewer, own) or ProfileNotFound()
+    return await get_viewable_profile(session, viewer, user_id)
 
 
 async def public_counts(session: AsyncSession) -> dict[Gender, int]:

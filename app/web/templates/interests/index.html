@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Отклики — Истина{% endblock %}
+{% block title %}Отклики — Никах Истина{% endblock %}
 {% block container_class %}container--narrow{% endblock %}
 {% block content %}
 <div class="page-head">
@@ -20,7 +20,11 @@
   <p>Отклики появятся, когда вы создадите анкету и её опубликуют.</p>
   <a class="btn btn-primary" href="/profile/new">Создать анкету</a>
 </div>
-{% elif tab == 'in' %}
+{% else %}
+{% if settings.PREMODERATION and own_profile.status.value != 'active' %}
+<div class="flashes">{% call m.alert('warning', 'Отправлять отклики можно после одобрения анкеты') %}<p>{% if own_profile.status.value == 'pending' %}Ваша анкета на модерации.{% elif own_profile.status.value == 'hidden' %}Ваша анкета скрыта — <a href="/me">покажите её</a>, чтобы откликаться.{% else %}Ваша анкета отклонена — <a href="/me/edit">исправьте её</a>.{% endif %} На входящие отклики ответить можно уже сейчас.</p>{% endcall %}</div>
+{% endif %}
+{% if tab == 'in' %}
   {% if incoming %}
   <ul class="list">{% for interest in incoming %}{% include "interests/_card.html" %}{% endfor %}</ul>
   {% else %}
@@ -42,5 +46,6 @@
     <a class="btn btn-primary" href="/catalog">Смотреть анкеты</a>
   </div>
   {% endif %}
+{% endif %}
 {% endif %}
 {% endblock %}

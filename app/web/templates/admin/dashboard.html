@@ -14,20 +14,40 @@
   </a>
   <a class="adm-tile" href="/admin/flagged">
     <span class="adm-tile__value">{{ stats.flagged_messages }}</span>
-    <span class="adm-tile__label">сообщений со стоп-словами</span>
+    <span class="adm-tile__label">помеченных сообщений</span>
   </a>
   <a class="adm-tile" href="/admin/users">
     <span class="adm-tile__value">{{ stats.users_total }}</span>
     <span class="adm-tile__label">пользователей{% if stats.users_banned %}, из них {{ stats.users_banned }} заблок.{% endif %}</span>
   </a>
-  <div class="adm-tile">
+  <a class="adm-tile" href="/admin/chats">
     <span class="adm-tile__value">{{ stats.open_conversations }}</span>
-    <span class="adm-tile__label">открытых чатов</span>
-  </div>
+    <span class="adm-tile__label">открытых чатов (всего {{ stats.conversations_total }})</span>
+  </a>
   <div class="adm-tile">
     <span class="adm-tile__value">{{ stats.messages_24h }}</span>
-    <span class="adm-tile__label">сообщений за 24 часа</span>
+    <span class="adm-tile__label">сообщений за 24 часа (всего {{ stats.messages_total }})</span>
   </div>
+</section>
+
+<section class="adm-panel adm-legacy" aria-labelledby="legacy-title">
+  <h2 id="legacy-title">Перенос из старого бота</h2>
+  {% if legacy %}
+  <p class="adm-meta">Выполнен{% if legacy.imported_at %} {{ legacy.imported_at|msk }} (МСК){% endif %}. Числа из отчёта переноса и сейчас в базе: сразу после переноса они совпадают.</p>
+  <div class="adm-scroll">
+  <table class="adm-table">
+    <thead><tr><th scope="col">Таблица</th><th scope="col" class="num">Перенесено</th><th scope="col" class="num">Сейчас в базе</th></tr></thead>
+    <tbody>
+      {% for table, count in legacy.counts.items() %}
+      <tr><th scope="row">{{ legacy_tables.get(table, table) }} <span class="adm-muted">{{ table }}</span></th><td class="num">{{ count }}</td><td class="num">{{ stats.current(table) if stats.current(table) is not none else '—' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="adm-meta">Ещё не дали согласие на обработку данных: <b>{{ legacy.users_without_consent }}</b> {{ plural(legacy.users_without_consent, 'пользователь', 'пользователя', 'пользователей') }} (бот и сайт спросят при входе). Неполных анкет (нет семейного положения, детей, образования или занятости): <b>{{ legacy.incomplete_profiles }}</b>.</p>
+  {% else %}
+  <p class="adm-meta">Не выполнялся. Порядок переключения со старого бота — в docs/CUTOVER.md.</p>
+  {% endif %}
 </section>
 
 <div class="adm-grid">

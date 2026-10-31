@@ -1,8 +1,9 @@
-"""SQLAlchemy models (spec section 6).
+"""SQLAlchemy models (spec section 6, docs/LEGACY_BOT.md).
 
 Conventions:
-- Public user identifier is ``users.id`` ("#id" in the bot, ``/u/{id}`` on the site); a profile's
-  primary key is its ``user_id``.
+- The public identifier of a person is the profile number ``profiles.number`` («Анкета №512»,
+  ``/p/{number}``, bot ``p_<number>``); ``users.id`` is internal. A profile's primary key is its
+  ``user_id``.
 - Deleting a user row wipes all their data via ON DELETE CASCADE. Conversations survive with the
   deleted side set to NULL so the partner sees "собеседник удалил аккаунт".
 - Only many-to-one relationships (plus ``User.profile``) are mapped; collections are queried in
@@ -17,17 +18,20 @@ from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import (
+    DDL,
     BigInteger,
     CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
     Index,
+    Integer,
     MetaData,
+    Sequence,
     SmallInteger,
     String,
     Text,
-    UniqueConstraint,
+    event,
     false,
     func,
     true,
@@ -50,6 +54,7 @@ from app.enums import (
     LoginTokenKind,
     Madhab,
     MaritalStatus,
+    MessageKind,
     MessageOrigin,
     NikahTimeline,
     Prayer,
@@ -90,6 +95,13 @@ class Base(AsyncAttrs, DeclarativeBase):
     type_annotation_map = {datetime: DateTime(timezone=True)}
 
 
+# Public profile numbers continue the legacy bot's numbering (its first profile was №500).
+PROFILE_NUMBER_START = 500
+PROFILE_NUMBER_SEQ = Sequence("profiles_number_seq", start=PROFILE_NUMBER_START, metadata=Base.metadata)
+# Message flag reasons written by services (stop words are added as a comma-separated list).
+CONTACT_FILTER_REASON = "contact-leak filter"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -124,15 +136,20 @@ class Profile(Base):
     __tablename__ = "profiles"
 
     user_id: Mapped[int] = mapped_column(BigInteger, user_fk(), primary_key=True)
-    # Required fields
+    # «Анкета №N»: from PROFILE_NUMBER_SEQ; migrated profiles keep their legacy number.
+    number: Mapped[int] = mapped_column(
+        Integer, PROFILE_NUMBER_SEQ, server_default=PROFILE_NUMBER_SEQ.next_value(), unique=True
+    )
+    # Required fields. Marital status, children, education and employment are NULL in profiles
+    # migrated from the legacy bot (it did not ask them): such a profile is incomplete
+    # (profiles.missing_fields); new profiles must fill them (schemas.ProfileCreate).
     gender: Mapped[Gender] = mapped_column(enum_type(Gender))
-    name: Mapped[str] = mapped_column(String(40))
     birth_year: Mapped[int] = mapped_column(SmallInteger)
     city: Mapped[str] = mapped_column(String(60))
-    marital_status: Mapped[MaritalStatus] = mapped_column(enum_type(MaritalStatus))
-    children: Mapped[int] = mapped_column(SmallInteger)
-    education: Mapped[Education] = mapped_column(enum_type(Education))
-    employment: Mapped[Employment] = mapped_column(enum_type(Employment))
+    marital_status: Mapped[MaritalStatus | None] = mapped_column(enum_type(MaritalStatus))
+    children: Mapped[int | None] = mapped_column(SmallInteger)
+    education: Mapped[Education | None] = mapped_column(enum_type(Education))
+    employment: Mapped[Employment | None] = mapped_column(enum_type(Employment))
     wishes: Mapped[str] = mapped_column(Text)
     # Optional fields
     height: Mapped[int | None] = mapped_column(SmallInteger)
@@ -159,12 +176,24 @@ class Profile(Base):
 
     user: Mapped[User] = relationship(back_populates="profile")
 
+    # ``number`` comes from the database: fetch it with the INSERT (RETURNING), no lazy load later.
+    __mapper_args__ = {"eager_defaults": True}
+
     __table_args__ = (
         Index("ix_profiles_catalog", "status", "gender", "birth_year"),
         # Matches the catalog's city filter expression (case- and ё-insensitive).
         Index("ix_profiles_city_key", sql_text("replace(lower(city), 'ё', 'е')")),
         Index("ix_profiles_pending", "submitted_at", postgresql_where=sql_text("status = 'pending'")),
     )
+
+
+# create_all (tests) mirrors the migration: the sequence belongs to the column, so it is dropped with
+# it and ``TRUNCATE … RESTART IDENTITY`` restarts the numbering at 500.
+event.listen(
+    Profile.__table__,
+    "after_create",
+    DDL("ALTER SEQUENCE profiles_number_seq OWNED BY profiles.number").execute_if(dialect="postgresql"),
+)
 
 
 class Interest(Base):
@@ -185,15 +214,17 @@ class Interest(Base):
     from_user: Mapped[User] = relationship(foreign_keys=[from_user_id])
     to_user: Mapped[User] = relationship(foreign_keys=[to_user_id])
 
+    # Admits every state of the legacy bot (UNIQUE(from, to) there): each direction of a pair has
+    # its own history, both directions may be pending at once, and a pair may have had several
+    # chats. The remaining rules (no resend after a decline/accept, …) live in services.interests.
     __table_args__ = (
         CheckConstraint("from_user_id <> to_user_id", name="not_self"),
-        # At most one pending/accepted interest per unordered pair.
         Index(
-            "uq_interests_active_pair",
-            sql_text("LEAST(from_user_id, to_user_id)"),
-            sql_text("GREATEST(from_user_id, to_user_id)"),
+            "uq_interests_pending_direction",
+            "from_user_id",
+            "to_user_id",
             unique=True,
-            postgresql_where=sql_text("status IN ('pending', 'accepted')"),
+            postgresql_where=sql_text("status = 'pending'"),
         ),
         Index("ix_interests_to_user_status", "to_user_id", "status"),
         Index("ix_interests_from_user_created", "from_user_id", "created_at"),
@@ -219,9 +250,17 @@ class Conversation(Base):
     user_a: Mapped[User | None] = relationship(foreign_keys=[user_a_id])
     user_b: Mapped[User | None] = relationship(foreign_keys=[user_b_id])
 
+    # A pair may have several conversations over time, but only one open at a time.
     __table_args__ = (
-        UniqueConstraint("user_a_id", "user_b_id"),
         CheckConstraint("user_a_id < user_b_id", name="ordered_pair"),
+        Index(
+            "uq_conversations_open_pair",
+            "user_a_id",
+            "user_b_id",
+            unique=True,
+            postgresql_where=sql_text("closed_at IS NULL"),
+        ),
+        Index("ix_conversations_pair", "user_a_id", "user_b_id"),
         Index("ix_conversations_user_b_id", "user_b_id"),
     )
 
@@ -242,7 +281,12 @@ class Message(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     conversation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("conversations.id", ondelete="CASCADE"))
-    sender_id: Mapped[int] = mapped_column(BigInteger, user_fk())
+    # USER messages have a sender; WITNESS messages (written by the witness to both participants)
+    # have none.
+    kind: Mapped[MessageKind] = mapped_column(
+        enum_type(MessageKind), default=MessageKind.USER, server_default=MessageKind.USER.value
+    )
+    sender_id: Mapped[int | None] = mapped_column(BigInteger, user_fk())
     text: Mapped[str] = mapped_column(Text)
     origin: Mapped[MessageOrigin] = mapped_column(enum_type(MessageOrigin))
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=func.now())
@@ -250,15 +294,28 @@ class Message(Base):
     flagged: Mapped[bool] = mapped_column(default=False, server_default=false())
     flag_reason: Mapped[str | None] = mapped_column(Text)
 
-    sender: Mapped[User] = relationship()
+    sender: Mapped[User | None] = relationship()
     conversation: Mapped[Conversation] = relationship()
 
     __table_args__ = (
+        CheckConstraint(
+            "(kind = 'user' AND sender_id IS NOT NULL) OR (kind = 'witness' AND sender_id IS NULL)",
+            name="kind_sender",
+        ),
         Index("ix_messages_conversation_id_id", "conversation_id", "id"),
         Index("ix_messages_unread", "conversation_id", "sender_id", postgresql_where=sql_text("read_at IS NULL")),
         Index("ix_messages_flagged", "created_at", postgresql_where=sql_text("flagged")),
         Index("ix_messages_sender_id", "sender_id"),
     )
+
+    @property
+    def is_witness(self) -> bool:
+        return self.kind == MessageKind.WITNESS
+
+    @property
+    def contacts_hidden(self) -> bool:
+        """The contact filter replaced phones/links/@usernames in this message (chat.send_message)."""
+        return CONTACT_FILTER_REASON in (self.flag_reason or "").split(", ")
 
 
 class Guardian(Base):
@@ -362,3 +419,14 @@ class Outbox(Base):
         # Recent events of one kind (rate limits, e.g. profile submissions per hour).
         Index("ix_outbox_kind_created_at", "kind", "created_at"),
     )
+
+
+class AppMeta(Base):
+    """Small key-value store for one-off facts about the installation (services.meta), e.g. the
+    completed legacy import (key ``legacy_import``)."""
+
+    __tablename__ = "app_meta"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow, server_default=func.now())

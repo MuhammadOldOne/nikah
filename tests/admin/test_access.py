@@ -19,7 +19,8 @@ ADMIN_ROUTES: list[tuple[str, str]] = sorted(
 
 def test_router_covers_all_sections():
     paths = {path for _, path in ADMIN_ROUTES}
-    assert {"/admin", "/admin/moderation", "/admin/reports", "/admin/flagged", "/admin/users"} <= paths
+    sections = {"/admin", "/admin/moderation", "/admin/reports", "/admin/flagged", "/admin/chats", "/admin/users"}
+    assert sections <= paths
     assert all(path.startswith("/admin") for path in paths)
 
 

@@ -1,0 +1,10 @@
+# Alternative to docker-compose.hostproxy.yml: the bot stays on the compose network and reaches a
+# Telegram proxy on this server as host.docker.internal (the host's Docker bridge address). The
+# proxy must then listen on that address (e.g. 172.17.0.1), or on 0.0.0.0 with a firewall rule that
+# keeps its port closed from the internet; set TELEGRAM_PROXY=http://host.docker.internal:<порт>.
+# docs/DEPLOY.md, «Прокси Telegram». Enable in .env, e.g.
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.hostgateway.yml
+services:
+  bot:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

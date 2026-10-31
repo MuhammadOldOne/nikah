@@ -31,7 +31,7 @@ async def test_chat_list_and_page(client, dev_login, couple, session):
 
     listing = await client.get("/chats")
     assert listing.status_code == 200
-    assert "Фатима" in listing.text and "Ва алейкум ассалам" in listing.text
+    assert f"Анкета №{woman.profile.number}" in listing.text and "Ва алейкум ассалам" in listing.text
     assert 'data-badge="unread">1<' in listing.text
 
     page = await client.get(f"/chats/{conversation.id}")
@@ -121,7 +121,8 @@ async def test_close_conversation(client, dev_login, couple, session):
     page = (await client.get(f"/chats/{conversation.id}")).text
     assert "Писать в этот чат нельзя" in page and 'id="composer"' not in page
     response = await client.post(f"/chats/{conversation.id}/messages", data={"csrf_token": csrf, "text": "Ещё"})
-    assert "Общение в этом чате завершено" in (await client.get(f"/chats/{conversation.id}")).text
+    assert response.status_code == 422 and "Общение в этом чате завершено" in response.text
+    assert "Вы завершили общение." in page
 
 
 async def test_report_from_chat(client, dev_login, couple, session):
@@ -132,7 +133,7 @@ async def test_report_from_chat(client, dev_login, couple, session):
     assert response.status_code == 303
     report = await session.scalar(select(Report))
     assert (report.reporter_id, report.target_user_id) == (woman.id, man.id)
-    assert "Жалоба отправлена" in (await client.get(f"/chats/{conversation.id}")).text
+    assert f"Жалоба на анкету №{man.profile.number} отправлена" in (await client.get(f"/chats/{conversation.id}")).text
 
 
 async def test_wali_banner_and_deleted_partner(client, dev_login, couple, make_profile, session):
@@ -231,6 +232,23 @@ async def test_chat_stream_delivers_new_messages(app, running_broker, couple, se
         disconnected.set()
         await asyncio.wait_for(task, 5)
     assert running_broker.subscriber_count == 0
+
+
+async def test_chat_stream_delivers_witness_messages(app, running_broker, couple, make_user, session):
+    from app.services import witness
+
+    man, _, conversation = couple
+    admin = await make_user(is_admin=True)
+    task, chunks, disconnected, _ = await _open_stream(app, f"/chats/{conversation.id}/stream", man.id)
+    try:
+        await _read_until(chunks, "event: ready")
+        note = await witness.witness_say(session, admin, conversation.id, "Напоминаю о правилах общения.")
+        await session.commit()
+        received = await _read_until(chunks, "event: message")
+        assert f'"id":{note.id}' in received and "Напоминаю" not in received
+    finally:
+        disconnected.set()
+        await asyncio.wait_for(task, 5)
 
 
 async def test_open_chat_of_the_partner_learns_about_a_new_wali(app, running_broker, couple, make_user, session):

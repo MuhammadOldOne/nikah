@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% block title %}Чаты — Истина{% endblock %}
+{% block title %}Чаты — Никах Истина{% endblock %}
 {% block container_class %}container--narrow{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
     <h1>Чаты</h1>
-    <p class="muted">Сообщения синхронизируются с Telegram-ботом @{{ settings.BOT_USERNAME }}.</p>
+    <p class="muted">Сообщения синхронизируются с Telegram-ботом @{{ settings.BOT_USERNAME }}. Переписку видит свидетель (махрам/администратор).</p>
   </div>
 </div>
 {% if summaries %}
@@ -17,12 +17,12 @@
       {{ m.avatar(p.gender if p else 'male') }}
       <div class="chat-item__body">
         <div class="chat-item__top">
-          <span class="chat-item__name">{% if s.partner %}{{ p.name if p else s.partner.display_name }}{% else %}Аккаунт удалён{% endif %}</span>
-          <span class="chat-item__time">{% set t = s.last_message.created_at if s.last_message else c.created_at %}{{ t|msk('%d.%m %H:%M') }}</span>
+          <span class="chat-item__name">{% if s.partner and p %}{{ profile_title(p) }} — {{ gender_word(p.gender) }}{% elif s.partner %}Анкета удалена{% else %}Аккаунт удалён{% endif %}</span>
+          <span class="chat-item__time">{% set t = s.last_message.created_at if s.last_message else c.created_at %}{{ t|msk_day_time }}</span>
         </div>
         <div class="chat-item__bottom">
           <span class="chat-item__preview">
-            {% if s.last_message %}{% if s.last_message.sender_id == user.id %}Вы: {% endif %}{{ s.last_message.text|truncate(90, true, '…', 0) }}{% else %}Отклик принят — напишите первым{% endif %}
+            {% if s.last_message %}{% if s.last_message.is_witness %}Свидетель: {% elif s.last_message.sender_id == user.id %}Вы: {% endif %}{{ s.last_message.text|truncate(90, true, '…', 0) }}{% else %}Отклик принят — напишите первым{% endif %}
           </span>
           {% if s.unread_count %}<span class="badge" aria-label="Непрочитанных: {{ s.unread_count }}">{{ s.unread_count }}</span>
           {% elif c.closed_at %}<span class="pill">завершён</span>

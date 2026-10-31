@@ -7,6 +7,9 @@ with ``humanize_errors`` (field -> message, for forms) or ``first_error`` (one l
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+from datetime import date
+from enum import StrEnum
 from typing import Any, NoReturn
 
 from pydantic import BaseModel, ConfigDict, ValidationError, ValidationInfo, field_validator, model_validator
@@ -30,7 +33,6 @@ AGE_MIN, AGE_MAX = 18, 80
 HEIGHT_MIN, HEIGHT_MAX = 140, 220
 WEIGHT_MIN, WEIGHT_MAX = 35, 200
 CHILDREN_MIN, CHILDREN_MAX = 0, 15
-NAME_MIN, NAME_MAX = 2, 40
 CITY_MIN, CITY_MAX = 2, 60
 OCCUPATION_MAX = 100
 NATIONALITY_MAX = 50
@@ -41,9 +43,10 @@ CHAT_MESSAGE_MAX = 2000
 REPORT_COMMENT_MAX = 1000
 MODERATION_NOTE_MAX = 500
 
+# Required for a NEW profile (site wizard, bot registration). Profiles migrated from the legacy bot
+# may lack marital_status, children, education and employment (NULL): see services.profiles.missing_fields.
 PROFILE_REQUIRED_FIELDS: tuple[str, ...] = (
     "gender",
-    "name",
     "birth_year",
     "city",
     "marital_status",
@@ -63,9 +66,11 @@ PROFILE_OPTIONAL_FIELDS: tuple[str, ...] = (
     "relocation",
     "about",
 )
+# Free text needs a moderator's look again when it changes; choices and numbers do not.
+PROFILE_FREE_TEXT_FIELDS: tuple[str, ...] = ("city", "nationality", "occupation", "about", "wishes")
 FIELD_LABELS: dict[str, str] = {
     "gender": "Пол",
-    "name": "Имя или псевдоним",
+    "age": "Возраст",
     "birth_year": "Год рождения",
     "city": "Город",
     "marital_status": "Семейное положение",
@@ -88,7 +93,6 @@ REQUIRED_MESSAGE = "Обязательное поле."
 CONTACTS_MESSAGE = (
     "Уберите ссылки, телефоны, e-mail и @юзернеймы: обмен контактами возможен только в чате после взаимного согласия."
 )
-_NAME_RE = re.compile(r"^[^\W\d_]+(?:[ '’\-][^\W\d_]+)*$")
 _CITY_RE = re.compile(r"^[^\W\d_]+(?:(?:[ '’\-]|\. ?)[^\W\d_]+)*\.?$")
 
 
@@ -130,6 +134,25 @@ def birth_year_bounds() -> tuple[int, int]:
     return year - AGE_MAX, year - AGE_MIN
 
 
+def birth_year_from_age(age: int, today: date | None = None) -> int:
+    """Birth year stored for an age («Сколько вам лет?» in the bot): current year − age (Moscow date)."""
+    return (today.year if today is not None else current_year()) - age
+
+
+class AgeIn(BaseModel):
+    """An age typed in the bot; the allowed range is the same as for birth years on the site."""
+
+    age: int
+
+    @field_validator("age")
+    @classmethod
+    def _age(cls, value: int) -> int:
+        return _check_range(value, AGE_MIN, AGE_MAX, f"Возраст — от {AGE_MIN} до {AGE_MAX} лет.")
+
+    def birth_year(self, today: date | None = None) -> int:
+        return birth_year_from_age(self.age, today)
+
+
 class _ProfileValidators(BaseModel):
     """Field rules shared by ProfileCreate and ProfileUpdate."""
 
@@ -146,16 +169,6 @@ class _ProfileValidators(BaseModel):
     @classmethod
     def _blank_to_none(cls, value: Any) -> Any:
         return None if _is_blank(value) else value
-
-    @field_validator("name", check_fields=False)
-    @classmethod
-    def _name(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        value = _check_length(clean_line(value), min_len=NAME_MIN, max_len=NAME_MAX)
-        if not _NAME_RE.fullmatch(value):
-            _fail("Имя может содержать только буквы, пробелы и дефис.")
-        return value
 
     @field_validator("city", check_fields=False)
     @classmethod
@@ -230,7 +243,6 @@ class _ProfileValidators(BaseModel):
 
 class ProfileCreate(_ProfileValidators):
     gender: Gender
-    name: str
     birth_year: int
     city: str
     marital_status: MaritalStatus
@@ -253,10 +265,11 @@ class ProfileUpdate(_ProfileValidators):
     """Partial update: only fields that were passed are changed (``changes()``).
 
     Gender cannot be changed after the profile is created. Passing an empty value for a
-    required field is an error; for an optional field it clears the value.
+    required field is an error; for an optional field it clears the value. Only the passed fields
+    are validated: build it with ``from_form`` when a form sends every field, so that unchanged
+    values (e.g. legacy texts that predate the current rules) are not checked again.
     """
 
-    name: str | None = None
     birth_year: int | None = None
     city: str | None = None
     marital_status: MaritalStatus | None = None
@@ -276,6 +289,35 @@ class ProfileUpdate(_ProfileValidators):
 
     def changes(self) -> dict[str, Any]:
         return self.model_dump(exclude_unset=True)
+
+    @classmethod
+    def from_form(cls, raw: Mapping[str, Any], current: object) -> ProfileUpdate:
+        """Validate only the submitted fields whose value differs from ``current`` (the stored
+        profile); raises ValidationError for those fields only."""
+        changed = {
+            name: value
+            for name, value in raw.items()
+            if name in cls.model_fields and not _same_value(getattr(current, name, None), value)
+        }
+        return cls.model_validate(changed)
+
+
+def _same_value(stored: Any, submitted: Any) -> bool:
+    """Whether a submitted form value means "unchanged" for a stored profile value."""
+    if _is_blank(submitted):
+        return _is_blank(stored)
+    if stored is None:
+        return False
+    if isinstance(stored, StrEnum):
+        return str(submitted).strip() == stored.value
+    if isinstance(stored, int):
+        try:
+            return int(str(submitted).strip()) == stored
+        except ValueError:
+            return False
+    if isinstance(stored, str):
+        return clean_text(str(submitted)) == clean_text(stored)
+    return bool(submitted == stored)
 
 
 class CatalogFilters(BaseModel):

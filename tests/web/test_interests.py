@@ -10,46 +10,49 @@ from tests.web.conftest import csrf_of
 
 async def test_profile_page_404_rules(client, dev_login, make_profile):
     me = await make_profile(gender=Gender.MALE)
-    sister = await make_profile(gender=Gender.FEMALE, name="Аиша")
+    sister = await make_profile(gender=Gender.FEMALE)
     brother = await make_profile(gender=Gender.MALE)
     pending = await make_profile(gender=Gender.FEMALE, status=ProfileStatus.PENDING)
     hidden = await make_profile(gender=Gender.FEMALE, status=ProfileStatus.HIDDEN)
     await dev_login(client, me.user)
 
-    page = await client.get(f"/u/{sister.user_id}")
-    assert page.status_code == 200 and "Аиша" in page.text and "Откликнуться" in page.text
+    page = await client.get(f"/p/{sister.number}")
+    assert page.status_code == 200 and f"Анкета №{sister.number} — Сестра" in page.text and "Откликнуться" in page.text
     for other in (brother, pending, hidden):
-        response = await client.get(f"/u/{other.user_id}")
+        response = await client.get(f"/p/{other.number}")
         assert response.status_code == 404
         assert "Страница не найдена" in response.text
-    assert (await client.get("/u/999999")).status_code == 404
-    assert (await client.get("/u/abc")).status_code == 404
-    own = await client.get(f"/u/{me.user_id}")
+    assert (await client.get("/p/999999")).status_code == 404
+    assert (await client.get("/p/abc")).status_code == 404
+    own = await client.get(f"/p/{me.number}")
     assert own.status_code == 200 and "Это ваша анкета" in own.text
+    assert (await client.get(f"/u/{sister.user_id}")).status_code == 404  # internal ids are not addresses
 
 
-async def test_pending_viewer_cannot_respond(client, dev_login, make_profile):
+async def test_pending_viewer_cannot_open_other_profiles(client, dev_login, make_profile):
     me = await make_profile(gender=Gender.MALE, status=ProfileStatus.PENDING)
     sister = await make_profile(gender=Gender.FEMALE)
     await dev_login(client, me.user)
-    html = (await client.get(f"/u/{sister.user_id}")).text
-    assert "после того, как модератор опубликует вашу анкету" in html
-    assert f'action="/u/{sister.user_id}/interest"' not in html
+    response = await client.get(f"/p/{sister.number}")
+    assert response.status_code == 200  # a page that explains, not an error
+    assert "Ваша анкета на модерации" in response.text and "Ваша анкета ещё не одобрена" in response.text
+    assert f"Анкета №{sister.number}" not in response.text
+    assert f'action="/p/{sister.number}/interest"' not in response.text
 
 
 async def test_send_interest_and_accept_opens_chat(client, app, dev_login, make_profile, session):
     import httpx
 
     brother = await make_profile(gender=Gender.MALE)
-    sister = await make_profile(gender=Gender.FEMALE, name="Фатима")
+    sister = await make_profile(gender=Gender.FEMALE)
     await dev_login(client, brother.user)
-    csrf = await csrf_of(client, f"/u/{sister.user_id}")
+    csrf = await csrf_of(client, f"/p/{sister.number}")
     response = await client.post(
-        f"/u/{sister.user_id}/interest", data={"csrf_token": csrf, "message": "Ассаляму алейкум!"}
+        f"/p/{sister.number}/interest", data={"csrf_token": csrf, "message": "Ассаляму алейкум!"}
     )
-    assert response.status_code == 303 and response.headers["location"] == f"/u/{sister.user_id}"
-    page = (await client.get(f"/u/{sister.user_id}")).text
-    assert "Отклик отправлен" in page
+    assert response.status_code == 303 and response.headers["location"] == f"/p/{sister.number}"
+    page = (await client.get(f"/p/{sister.number}")).text
+    assert "Отклик отправлен" in page and f"Отклик отправлен: Анкета №{sister.number}" in page
     interest = await session.scalar(select(Interest))
     assert interest.message == "Ассаляму алейкум!" and interest.status == InterestStatus.PENDING
 
@@ -65,8 +68,9 @@ async def test_send_interest_and_accept_opens_chat(client, app, dev_login, make_
         assert accepted.status_code == 303 and accepted.headers["location"] == f"/chats/{conversation.id}"
         chat_page = await her.get(f"/chats/{conversation.id}")
         assert chat_page.status_code == 200 and "Отклик принят" in chat_page.text
+        assert f"чат с анкетой №{brother.number} открыт" in chat_page.text
 
-    assert "Перейти в чат" in (await client.get(f"/u/{sister.user_id}")).text
+    assert "Перейти в чат" in (await client.get(f"/p/{sister.number}")).text
 
 
 async def test_accept_via_htmx_uses_hx_redirect(client, dev_login, make_pair, session):
@@ -138,9 +142,9 @@ async def test_interest_errors_are_shown(client, dev_login, make_pair, override_
     override_settings(INTEREST_DAILY_LIMIT=1)
     man, woman = await make_pair()
     await dev_login(client, man)
-    csrf = await csrf_of(client, f"/u/{woman.id}")
+    csrf = await csrf_of(client, f"/p/{woman.profile.number}")
     draft = "Ассаляму алейкум! Расскажу о себе и своей семье подробно. Мой номер 89991234567"
-    response = await client.post(f"/u/{woman.id}/interest", data={"csrf_token": csrf, "message": draft})
+    response = await client.post(f"/p/{woman.profile.number}/interest", data={"csrf_token": csrf, "message": draft})
     # The page comes back with the error next to the field and the typed message kept.
     assert response.status_code == 422
     assert 'id="interest-error" role="alert">Уберите ссылки, телефоны' in response.text
@@ -149,14 +153,16 @@ async def test_interest_errors_are_shown(client, dev_login, make_pair, override_
 
 async def test_report_from_profile_page(client, dev_login, make_pair, session):
     man, woman = await make_pair()
+    number = woman.profile.number
     await dev_login(client, man)
-    csrf = await csrf_of(client, f"/u/{woman.id}")
-    no_reason = await client.post(f"/u/{woman.id}/report", data={"csrf_token": csrf, "reason": ""})
-    assert no_reason.headers["location"] == f"/u/{woman.id}"
+    csrf = await csrf_of(client, f"/p/{number}")
+    no_reason = await client.post(f"/p/{number}/report", data={"csrf_token": csrf, "reason": ""})
+    assert no_reason.headers["location"] == f"/p/{number}"
     response = await client.post(
-        f"/u/{woman.id}/report", data={"csrf_token": csrf, "reason": "fraud", "comment": "Просит перевести деньги"}
+        f"/p/{number}/report", data={"csrf_token": csrf, "reason": "fraud", "comment": "Просит перевести деньги"}
     )
     assert response.status_code == 303 and response.headers["location"] == "/catalog"
     report = await session.scalar(select(Report))
     assert report.target_user_id == woman.id and report.comment == "Просит перевести деньги"
-    assert (await client.get(f"/u/{woman.id}")).status_code == 404  # hidden from each other now
+    assert f"Жалоба на анкету №{number} отправлена" in (await client.get("/catalog")).text
+    assert (await client.get(f"/p/{number}")).status_code == 404  # hidden from each other now

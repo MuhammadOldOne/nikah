@@ -1,4 +1,4 @@
-"""«⚙️ Настройки»: Telegram notifications and the wali (guardian) link."""
+"""«Настройки»: Telegram notifications and the wali (guardian) link."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ async def _view(session: AsyncSession, user: User) -> tuple[str, InlineKeyboardM
     wards = await guardians.list_wards(session, user)
     notify = "включены" if user.notify_telegram else "выключены"
     lines = [
-        "<b>⚙️ Настройки</b>",
+        "<b>Настройки</b>",
         "",
         f"🔔 Уведомления в Telegram: <b>{notify}</b>",
         "Новые сообщения, отклики и решения модерации приходят в этот чат.",
@@ -50,9 +50,9 @@ async def show_settings(event: Message | CallbackQuery, session: AsyncSession, u
 
 
 def _share_markup(link: str) -> InlineKeyboardMarkup:
-    query = urlencode({"url": link, "text": "Приглашение стать моим вали на платформе «Истина»"})
+    query = urlencode({"url": link, "text": "Приглашение стать моим вали на платформе «Никах Истина»"})
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="📤 Переслать вали", url=f"https://t.me/share/url?{query}")]]
+        inline_keyboard=[[InlineKeyboardButton(text="Переслать вали", url=f"https://t.me/share/url?{query}")]]
     )
 
 

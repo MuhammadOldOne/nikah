@@ -383,8 +383,42 @@ a.adm-tile:hover {
   border-color: var(--danger);
 }
 
+.adm-tag--witness {
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
 .adm-flags {
   margin: 4px 0 0;
+}
+
+/* Chat history (the witness's view) and witness messages */
+.adm-card--witness,
+.adm-msg--witness {
+  border-left: 3px solid var(--accent);
+}
+
+.adm-msg {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.adm-msg .adm-meta {
+  margin: 0 0 4px;
+}
+
+.adm-msg--flagged {
+  border-color: var(--warn);
+  background: var(--warn-bg);
+}
+
+.adm-legacy {
+  margin-bottom: 16px;
 }
 
 /* Tabs and pager */

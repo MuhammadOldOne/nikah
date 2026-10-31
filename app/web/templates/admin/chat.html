@@ -1,0 +1,27 @@
+{% extends "admin/base.html" %}
+{% block title %}Чат #{{ conversation.id }}{% endblock %}
+{% block content %}
+<p><a href="/admin/chats?status={{ 'open' if conversation.is_open else 'closed' }}">← Чаты</a></p>
+<h1>Чат #{{ conversation.id }}
+  {% if conversation.is_open %}<span class="adm-tag adm-tag--active">открыт</span>{% else %}<span class="adm-tag">закрыт</span>{% endif %}
+</h1>
+<p class="adm-meta">{{ am.person(conversation.user_a) }} ↔ {{ am.person(conversation.user_b) }} · открыт {{ conversation.created_at|msk }}
+  {%- if not conversation.is_open %} · закрыт {{ conversation.closed_at|msk }}{% if conversation.close_reason %}: {{ label(conversation.close_reason) }}{% endif %}{% endif %}
+  · сообщений: {{ total }}</p>
+<p class="adm-hint">Написать в чат или закрыть его можно кнопками «✍️ Написать в чат» и «🚫 Закрыть чат» под копиями сообщений в Telegram.</p>
+
+{% if earlier %}<p><a href="/admin/chats/{{ conversation.id }}?before={{ messages[0].id }}">← Более ранние сообщения</a></p>{% endif %}
+{% for message in messages %}
+<article class="adm-msg{% if message.is_witness %} adm-msg--witness{% endif %}{% if message.flagged %} adm-msg--flagged{% endif %}" id="m{{ message.id }}">
+  <p class="adm-meta">
+    {% if message.is_witness %}<span class="adm-tag adm-tag--witness">Свидетель</span>{% else %}{{ am.person(senders.get(message.sender_id)) }}{% endif %}
+    · {{ message.created_at|msk }} · через {{ label(message.origin) }}
+  </p>
+  {{ am.flags(message.flag_reason) }}
+  <div class="adm-text">{{ highlight(message.text) }}</div>
+</article>
+{% else %}
+<p class="adm-empty">Сообщений нет.</p>
+{% endfor %}
+{% if before %}<p><a href="/admin/chats/{{ conversation.id }}">Последние сообщения →</a></p>{% endif %}
+{% endblock %}

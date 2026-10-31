@@ -21,7 +21,7 @@ import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TypeGuard
+from typing import Any, TypeGuard
 
 from aiogram import Bot
 from aiogram.exceptions import (
@@ -37,6 +37,7 @@ from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot import render
+from app.config import get_settings
 from app.db import session_scope
 from app.enums import ConversationCloseReason, InterestStatus, ProfileStatus, ReportStatus
 from app.logutil import exc_summary
@@ -63,10 +64,13 @@ class Delivery:
     telegram_id: int
     text: str
     reply_markup: InlineKeyboardMarkup | None = None
+    # Where to send instead when Telegram refuses this chat for good (the bot was removed from the
+    # witness group, a wrong WITNESS_CHAT_ID): the witness must not silently lose copies.
+    fallback: tuple[int, ...] = ()
 
     @classmethod
-    def of(cls, telegram_id: int, rendered: render.Rendered) -> Delivery:
-        return cls(telegram_id, rendered.text, rendered.reply_markup)
+    def of(cls, telegram_id: int, rendered: render.Rendered, fallback: tuple[int, ...] = ()) -> Delivery:
+        return cls(telegram_id, rendered.text, rendered.reply_markup, fallback)
 
 
 def _notifiable(user: User | None) -> TypeGuard[User]:
@@ -85,9 +89,20 @@ async def _message_created(session: AsyncSession, row: Outbox) -> list[Delivery]
     # A banned sender's queued messages are not pushed to the partner (wali copies still go out).
     if _notifiable(recipient) and recipient.id != sender.id and not sender.is_banned:  # never echo to the sender
         watched = await guardians.has_active_guardian(session, sender.id)
-        rendered = render.message_notification(sender, message, sender_has_guardian=watched)
+        # «Ответить» only when plain text would not reach this chat by itself.
+        several = (await chat.count_open_conversations(session, [recipient.id]))[recipient.id] > 1
+        rendered = render.message_notification(sender, message, with_reply=several, sender_has_guardian=watched)
         deliveries.append(Delivery.of(recipient.telegram_id, rendered))
     participants = {sender.id: sender} | ({recipient.id: recipient} if recipient is not None else {})
+    deliveries += await _guardian_copies(session, payload, participants, sender, message)
+    return deliveries
+
+
+async def _guardian_copies(
+    session: AsyncSession, payload: dict[str, Any], participants: dict[int, User], sender: User | None, message: Message
+) -> list[Delivery]:
+    """One copy per active wali of a participant (``sender`` None: a witness message)."""
+    deliveries = []
     copied_to: set[int] = set()
     for link in payload.get("guardians", []):
         ward, guardian_id = participants.get(link["ward_user_id"]), link["guardian_user_id"]
@@ -99,12 +114,31 @@ async def _message_created(session: AsyncSession, row: Outbox) -> list[Delivery]
             continue
         if active.guardian.is_banned:
             continue
-        partner = recipient if ward.id == sender.id else sender
+        partner_id = next((uid for uid in participants if uid != ward.id), None)
+        partner = participants.get(partner_id) if partner_id is not None else None
         deliveries.append(
             Delivery.of(active.guardian.telegram_id, render.guardian_copy(ward, partner, sender, message))
         )
         copied_to.add(guardian_id)
     return deliveries
+
+
+async def _message_witness(session: AsyncSession, row: Outbox) -> list[Delivery]:
+    """The witness wrote into the chat: both participants and their walis."""
+    message = await session.get(Message, row.payload["message_id"])
+    if message is None:
+        return []
+    participants = {
+        user.id: user
+        for user_id in row.payload.get("recipient_ids", [])
+        if (user := await users.get_by_id(session, user_id)) is not None
+    }
+    deliveries = [
+        Delivery.of(user.telegram_id, render.witness_message(message))
+        for user in participants.values()
+        if _notifiable(user)
+    ]
+    return deliveries + await _guardian_copies(session, row.payload, participants, None, message)
 
 
 async def _interest_created(session: AsyncSession, row: Outbox) -> list[Delivery]:
@@ -123,12 +157,18 @@ async def _interest_created(session: AsyncSession, row: Outbox) -> list[Delivery
 
 
 async def _interest_accepted(session: AsyncSession, row: Outbox) -> list[Delivery]:
+    """The legacy «Чат открыт между анкетами №A и №B» to the sender (the acceptor saw it at once)."""
     sender = await users.get_by_id(session, row.payload["from_user_id"])
     acceptor = await users.get_by_id(session, row.payload["to_user_id"])
-    if not _notifiable(sender) or acceptor is None:
+    if not _notifiable(sender) or acceptor is None or sender.profile is None or acceptor.profile is None:
         return []
-    watched = await guardians.has_active_guardian(session, acceptor.id)
-    rendered = render.interest_accepted(acceptor, row.payload["conversation_id"], acceptor_has_guardian=watched)
+    rendered = render.chat_opened(
+        acceptor.profile,
+        sender.profile,
+        row.payload["conversation_id"],
+        several_allowed=get_settings().MAX_OPEN_CONVERSATIONS > 1,
+        badge=await guardians.has_active_guardian(session, acceptor.id),
+    )
     return [Delivery.of(sender.telegram_id, rendered)]
 
 
@@ -145,9 +185,10 @@ async def _conversation_closed(session: AsyncSession, row: Outbox) -> list[Deliv
     if conversation is None:
         return []
     reason = ConversationCloseReason(row.payload["reason"])
+    by_witness = reason == ConversationCloseReason.CLOSED_BY_WITNESS
     deliveries = []
     for user_id in (conversation.user_a_id, conversation.user_b_id):
-        if user_id is None or user_id == row.payload.get("closed_by_id"):
+        if user_id is None or (user_id == row.payload.get("closed_by_id") and not by_witness):
             continue
         recipient = await users.get_by_id(session, user_id)
         if not _notifiable(recipient):
@@ -204,6 +245,59 @@ async def _guardian_linked(session: AsyncSession, row: Outbox) -> list[Delivery]
     return deliveries
 
 
+async def _to_witness(session: AsyncSession, rendered: render.Rendered) -> list[Delivery]:
+    """The witness: WITNESS_CHAT_ID (falling back to the admins if Telegram refuses that chat), or
+    each admin privately when it is unset."""
+    admin_ids = await users.admin_telegram_ids(session)
+    witness_chat = get_settings().WITNESS_CHAT_ID
+    if witness_chat is None:
+        return [Delivery.of(telegram_id, rendered) for telegram_id in admin_ids]
+    return [Delivery.of(witness_chat, rendered, fallback=tuple(admin_ids))]
+
+
+async def _participants(session: AsyncSession, conversation: Conversation) -> tuple[User | None, User | None]:
+    a = await users.get_by_id(session, conversation.user_a_id) if conversation.user_a_id is not None else None
+    b = await users.get_by_id(session, conversation.user_b_id) if conversation.user_b_id is not None else None
+    return a, b
+
+
+async def _witness_copy(session: AsyncSession, row: Outbox) -> list[Delivery]:
+    """Exactly one copy per participant message, from the site or Telegram."""
+    message = await session.get(Message, row.payload["message_id"])
+    if message is None:
+        return []  # deleted with the sender's account
+    sender = await users.get_by_id(session, row.payload["sender_id"])
+    recipient = await users.get_by_id(session, row.payload["recipient_id"])
+    rendered = render.witness_copy(row.payload["conversation_id"], message, sender, recipient)
+    return await _to_witness(session, rendered)
+
+
+async def _witness_conversation_opened(session: AsyncSession, row: Outbox) -> list[Delivery]:
+    conversation = await session.get(Conversation, row.payload["conversation_id"])
+    if conversation is None:
+        return []
+    a, b = await _participants(session, conversation)
+    return await _to_witness(session, render.witness_conversation_opened(conversation, a, b))
+
+
+async def _witness_conversation_closed(session: AsyncSession, row: Outbox) -> list[Delivery]:
+    conversation = await session.get(Conversation, row.payload["conversation_id"])
+    if conversation is None:
+        return []
+    a, b = await _participants(session, conversation)
+    reason = ConversationCloseReason(row.payload["reason"])
+    return await _to_witness(session, render.witness_conversation_closed(conversation, reason, a, b))
+
+
+async def _witness_report(session: AsyncSession, row: Outbox) -> list[Delivery]:
+    """Only to the witness group: the admins already get the report card (report.created)."""
+    witness_chat = get_settings().WITNESS_CHAT_ID
+    report = await moderation.get_report(session, row.payload["report_id"])
+    if witness_chat is None or report is None:
+        return []
+    return [Delivery.of(witness_chat, render.witness_report(report))]
+
+
 _BUILDERS: dict[str, Callable[[AsyncSession, Outbox], Awaitable[list[Delivery]]]] = {
     EventKind.MESSAGE_CREATED: _message_created,
     EventKind.INTEREST_CREATED: _interest_created,
@@ -214,6 +308,11 @@ _BUILDERS: dict[str, Callable[[AsyncSession, Outbox], Awaitable[list[Delivery]]]
     EventKind.PROFILE_MODERATED: _profile_moderated,
     EventKind.REPORT_CREATED: _report_created,
     EventKind.GUARDIAN_LINKED: _guardian_linked,
+    EventKind.MESSAGE_WITNESS: _message_witness,
+    EventKind.WITNESS_COPY: _witness_copy,
+    EventKind.WITNESS_CONVERSATION_OPENED: _witness_conversation_opened,
+    EventKind.WITNESS_CONVERSATION_CLOSED: _witness_conversation_closed,
+    EventKind.WITNESS_REPORT: _witness_report,
 }
 
 
@@ -306,7 +405,12 @@ class OutboxWorker:
             return True
         try:
             for delivery in deliveries:
-                await self._send(row, delivery)
+                if not await self._send(row, delivery.telegram_id, delivery) and delivery.fallback:
+                    logger.warning(
+                        "outbox %s (%s): the witness chat refused the message, sent to admins", row.id, row.kind
+                    )
+                    for telegram_id in delivery.fallback:
+                        await self._send(row, telegram_id, delivery)
         except TELEGRAM_UNAVAILABLE as exc:
             logger.warning("outbox %s (%s): Telegram unavailable: %s", row.id, row.kind, type(exc).__name__)
             return False
@@ -317,15 +421,19 @@ class OutboxWorker:
         await events.mark_sent(session, row)
         return True
 
-    async def _send(self, row: Outbox, delivery: Delivery) -> None:
-        """Send one message. Flood control: wait and retry a few times. A recipient who blocked the
-        bot or a message Telegram rejects is skipped (retrying cannot help). Other errors propagate."""
+    async def _send(self, row: Outbox, telegram_id: int, delivery: Delivery) -> bool:
+        """Send one message; returns whether it was delivered. Flood control (also a group's rate
+        limit, e.g. the witness chat): wait and retry a few times, then the batch pauses with the
+        row untouched, so nothing is dropped. A recipient who blocked the bot or a message Telegram
+        rejects is skipped (retrying cannot help). Other errors propagate."""
         flood_retries = 0
+        delivered = False
         while True:
             try:
                 await self._bot.send_message(
-                    chat_id=delivery.telegram_id, text=delivery.text, reply_markup=delivery.reply_markup
+                    chat_id=telegram_id, text=delivery.text, reply_markup=delivery.reply_markup
                 )
+                delivered = True
             except TelegramRetryAfter as exc:
                 flood_retries += 1
                 if flood_retries > MAX_FLOOD_RETRIES:
@@ -339,6 +447,7 @@ class OutboxWorker:
                 logger.warning("outbox %s (%s): Telegram rejected the message: %.200s", row.id, row.kind, exc.message)
             break
         await asyncio.sleep(self._send_delay)
+        return delivered
 
 
 async def housekeeping(interval: float = HOUSEKEEPING_INTERVAL) -> None:

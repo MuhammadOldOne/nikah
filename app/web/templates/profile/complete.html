@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{# «Дополнить анкету»: only the required fields a profile migrated from the Telegram bot lacks.
+   Context: profile, missing (field names), values, errors, gender, years, glabels, field_labels. #}
+{% block title %}Дополнить анкету — Никах Истина{% endblock %}
+{% block container_class %}container--form{% endblock %}
+{% block content %}
+{% set g = profile.gender %}
+<a class="back-link" href="/me">{{ m.icon('arrow-left', 'icon--sm') }} Моя анкета</a>
+<div class="page-head">
+  <div>
+    <h1>Дополнить анкету</h1>
+    <p class="muted">{{ profile_title(profile) }} — {{ gender_word(g) }}. {{ missing|length }} {{ plural(missing|length, 'вопрос', 'вопроса', 'вопросов') }}, по одному нажатию на каждый.</p>
+  </div>
+</div>
+
+<div class="stack">
+  {% if errors %}
+  {% call m.alert('error', 'Ответьте на все вопросы') %}<p>Без отмеченных ниже полей анкета останется неполной.</p>{% endcall %}
+  {% else %}
+  {% call m.alert('info') %}<p>Анкета перенесена из Telegram-бота, а на сайте появились новые вопросы. {% if profile.status.value == 'active' %}Анкета остаётся опубликованной: эти ответы не требуют повторной модерации.{% endif %}</p>{% endcall %}
+  {% endif %}
+
+  <form class="card card-pad complete-form" method="post" action="/me/complete">
+    {{ m.csrf_field() }}
+    {% for name in missing %}
+    {% set label_text = field_labels.get(name, name) %}
+    {% if name == 'marital_status' %}
+    {{ m.chips(name, label_text, choices(enums.MaritalStatus, g), values.get(name), errors, required=true, big=true) }}
+    {% elif name == 'education' %}
+    {{ m.chips(name, label_text, choices(enums.Education), values.get(name), errors, required=true, big=true) }}
+    {% elif name == 'employment' %}
+    {{ m.chips(name, label_text, choices(enums.Employment), values.get(name), errors, required=true, big=true) }}
+    {% elif name == 'children' %}
+    <fieldset class="field{% if errors.get(name) %} is-invalid{% endif %}" id="field-children">
+      <legend>{{ label_text }} <span class="req" aria-hidden="true">*</span></legend>
+      <div class="chips chips--numbers">
+        {% for n in range(0, 16) %}
+        <label class="chip"><input type="radio" name="children" value="{{ n }}"{% if values.get('children') == n|string %} checked{% endif %}{% if loop.first %} required{% endif %}{% if errors.get(name) %} aria-invalid="true" aria-describedby="children-error"{% endif %}><span>{{ 'Нет' if n == 0 else n }}</span></label>
+        {% endfor %}
+      </div>
+      {{ m.field_error(errors, name) }}
+    </fieldset>
+    {% elif name == 'birth_year' %}
+    <div class="field{% if errors.get(name) %} is-invalid{% endif %}">
+      <label for="f-birth_year">{{ label_text }} <span class="req" aria-hidden="true">*</span></label>
+      <select class="select select--big" id="f-birth_year" name="birth_year" required{{ m.describedby(errors, name) }}>
+        <option value="">Выберите год</option>
+        {% for year in years %}<option value="{{ year }}"{% if values.get(name) == year|string %} selected{% endif %}>{{ year }}</option>{% endfor %}
+      </select>
+      {{ m.field_error(errors, name) }}
+    </div>
+    {% elif name == 'wishes' %}
+    <div class="field{% if errors.get(name) %} is-invalid{% endif %}">
+      <label for="f-wishes">Пожелания к {{ gendered(g, 'супруге', 'супругу') }} <span class="req" aria-hidden="true">*</span></label>
+      <textarea class="textarea" id="f-wishes" name="wishes" rows="4" maxlength="1000" minlength="10" required data-counter="1000"{{ m.describedby(errors, name) }}>{{ values.get(name, '') }}</textarea>
+      {{ m.field_error(errors, name) }}
+    </div>
+    {% else %}
+    <div class="field{% if errors.get(name) %} is-invalid{% endif %}">
+      <label for="f-{{ name }}">{{ label_text }} <span class="req" aria-hidden="true">*</span></label>
+      <input class="input" id="f-{{ name }}" name="{{ name }}" type="text" value="{{ values.get(name, '') }}" required maxlength="60"{{ m.describedby(errors, name) }}>
+      {{ m.field_error(errors, name) }}
+    </div>
+    {% endif %}
+    {% endfor %}
+    <div class="row row--between">
+      <a class="btn btn-ghost" href="/me">Позже</a>
+      <button type="submit" class="btn btn-primary btn-lg">Сохранить</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

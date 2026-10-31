@@ -19,6 +19,7 @@ from app.services.errors import (
     InvalidInput,
     ProfileNotActive,
     ProfileNotFound,
+    ProfileRequired,
     UserBanned,
 )
 
@@ -40,7 +41,7 @@ async def test_send_interest_happy_path(session, make_pair):
     assert [i.id for i in await interests.list_incoming(session, woman)] == [interest.id]
     assert [i.id for i in await interests.list_outgoing(session, man)] == [interest.id]
     incoming = (await interests.list_incoming(session, woman))[0]
-    assert incoming.from_user.profile.name == "Ахмад"
+    assert incoming.from_user.profile.gender == Gender.MALE
 
 
 async def test_sender_rules(session, make_pair, make_profile, make_user):
@@ -50,7 +51,7 @@ async def test_sender_rules(session, make_pair, make_profile, make_user):
     pending = await make_profile(gender=Gender.MALE, status=ProfileStatus.PENDING)
     with pytest.raises(ProfileNotActive):
         await interests.send_interest(session, pending.user, woman.id)
-    with pytest.raises(ProfileNotActive):
+    with pytest.raises(ProfileRequired):
         await interests.send_interest(session, await make_user(), woman.id)
     banned = await make_profile(await make_user(is_banned=True), gender=Gender.MALE)
     with pytest.raises(UserBanned):
@@ -94,12 +95,13 @@ async def test_pair_uniqueness_in_both_directions(session, make_pair):
         await interests.send_interest(session, woman, man.id)
 
 
-async def test_unique_index_enforces_unordered_pair(session, make_pair):
+async def test_unique_index_allows_one_pending_interest_per_direction(session, make_pair):
     man, woman = await make_pair()
     session.add(Interest(from_user_id=man.id, to_user_id=woman.id))
+    session.add(Interest(from_user_id=woman.id, to_user_id=man.id))  # legacy: both directions pending
     await session.flush()
-    session.add(Interest(from_user_id=woman.id, to_user_id=man.id))
-    with pytest.raises(Exception, match="uq_interests_active_pair"):
+    session.add(Interest(from_user_id=man.id, to_user_id=woman.id))
+    with pytest.raises(Exception, match="uq_interests_pending_direction"):
         await session.flush()
     await session.rollback()
 

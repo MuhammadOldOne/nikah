@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
 
 import pytest
 from aiogram.exceptions import (
@@ -15,59 +13,18 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
     TelegramServerError,
 )
-from aiogram.methods import SendMessage
 from sqlalchemy import select, update
 
 from app.bot import render
-from app.bot.callbacks import AdminProfileCb, ChatCb, InterestCb
+from app.bot.callbacks import AdminProfileCb, ChatCb
 from app.bot.outbox import OutboxWorker
 from app.clock import utcnow
 from app.enums import Gender, MessageOrigin, ProfileStatus, ReportReason
-from app.models import Outbox, User
+from app.models import Message, Outbox, User
 from app.schemas import ProfileCreate
 from app.services import chat, guardians, interests, moderation, profiles, users
 from app.services.events import EventListener
-from tests.bot.conftest import buttons
-
-_METHOD = SendMessage(chat_id=1, text="x")
-
-
-@dataclass
-class Sent:
-    chat_id: int
-    text: str
-    reply_markup: Any
-
-
-class FakeBot:
-    """Records send_message calls; ``fail(chat_id, exc, ...)`` makes the next sends to that chat raise."""
-
-    def __init__(self) -> None:
-        self.sent: list[Sent] = []
-        self.delivered = asyncio.Event()
-        self._failures: dict[int, list[Exception]] = {}
-
-    def fail(self, chat_id: int, *errors: Exception) -> None:
-        self._failures.setdefault(chat_id, []).extend(errors)
-
-    async def send_message(self, chat_id: int, text: str, reply_markup: Any = None, **_: Any) -> None:
-        if self._failures.get(chat_id):
-            raise self._failures[chat_id].pop(0)
-        self.sent.append(Sent(chat_id, text, reply_markup))
-        self.delivered.set()
-
-    def to(self, user: User) -> list[Sent]:
-        return [item for item in self.sent if item.chat_id == user.telegram_id]
-
-
-@pytest.fixture
-def bot() -> FakeBot:
-    return FakeBot()
-
-
-@pytest.fixture
-def worker(bot: FakeBot) -> OutboxWorker:
-    return OutboxWorker(bot, send_delay=0)  # type: ignore[arg-type]
+from tests.bot.conftest import SEND_METHOD, buttons
 
 
 async def _settle(session) -> None:
@@ -83,7 +40,14 @@ async def _link_guardian(session, ward: User, guardian: User) -> None:
 
 
 async def _last_row(session) -> Outbox:
-    stmt = select(Outbox).order_by(Outbox.id.desc()).limit(1).execution_options(populate_existing=True)
+    """The latest row that is not a witness notice (those go to the witness chat, see test_witness)."""
+    stmt = (
+        select(Outbox)
+        .where(~Outbox.kind.startswith("witness."))
+        .order_by(Outbox.id.desc())
+        .limit(1)
+        .execution_options(populate_existing=True)
+    )
     return (await session.scalars(stmt)).one()
 
 
@@ -103,21 +67,21 @@ async def test_web_message_goes_to_recipient_and_both_walis_never_to_sender(sess
     await chat.send_message(session, conversation.id, man, "Ас-саляму алейкум <b>!</b>", MessageOrigin.WEB)
     await session.commit()
 
-    assert await worker.process_batch() == 1
+    assert await worker.process_batch() == 2  # message.created + witness.copy
 
     assert bot.to(man) == []
     [to_woman] = bot.to(woman)
-    # The sender has a wali: the badge is in every notification of his messages.
+    # The legacy format; the sender has a wali: the badge is in every notification of his messages.
     assert to_woman.text == (
-        f"💬 <b>Ахмад</b> (#{man.id}):\nАс-саляму алейкум &lt;b&gt;!&lt;/b&gt;\n\n{render.GUARDIAN_BADGE}"
+        f"<b>Анкета №500 пишет:</b>\nАс-саляму алейкум &lt;b&gt;!&lt;/b&gt;\n\n{render.GUARDIAN_BADGE}"
     )
-    reply, site = buttons(to_woman.reply_markup)
-    assert ChatCb.unpack(reply.callback_data).conversation_id == conversation.id
-    assert site.url == f"http://testserver/chats/{conversation.id}"
+    message = await session.scalar(select(Message).where(Message.sender_id == man.id))
+    [report] = buttons(to_woman.reply_markup)  # one open chat: no «Ответить», text goes there anyway
+    assert (report.text, report.callback_data) == ("Пожаловаться", f"rep:{message.id}")
     for wali in (wali_man, wali_woman):
         [copy] = bot.to(wali)
         assert copy.text.startswith("👁 Копия переписки:")
-        assert "<b>Ахмад</b>: Ас-саляму алейкум &lt;b&gt;!&lt;/b&gt;" in copy.text
+        assert "<b>Анкета №500</b>: Ас-саляму алейкум &lt;b&gt;!&lt;/b&gt;" in copy.text
         assert copy.reply_markup is None
     row = await _last_row(session)
     assert row.sent_at is not None and row.attempts == 0
@@ -150,7 +114,7 @@ async def test_revoked_wali_gets_no_copy(session, bot, worker, chat_with_walis):
 
 async def test_blocked_bot_marks_row_sent_and_others_still_delivered(session, bot, worker, chat_with_walis):
     man, woman, conversation, _, wali_woman = chat_with_walis
-    bot.fail(woman.telegram_id, TelegramForbiddenError(_METHOD, "Forbidden: bot was blocked by the user"))
+    bot.fail(woman.telegram_id, TelegramForbiddenError(SEND_METHOD, "Forbidden: bot was blocked by the user"))
     await chat.send_message(session, conversation.id, man, "Салам", MessageOrigin.WEB)
     await session.commit()
 
@@ -164,7 +128,7 @@ async def test_blocked_bot_marks_row_sent_and_others_still_delivered(session, bo
 
 async def test_chat_not_found_is_skipped_without_retry(session, bot, worker, chat_with_walis):
     man, woman, conversation, *_ = chat_with_walis
-    bot.fail(woman.telegram_id, TelegramBadRequest(_METHOD, "Bad Request: chat not found"))
+    bot.fail(woman.telegram_id, TelegramBadRequest(SEND_METHOD, "Bad Request: chat not found"))
     await chat.send_message(session, conversation.id, man, "Салам", MessageOrigin.WEB)
     await session.commit()
 
@@ -176,7 +140,7 @@ async def test_chat_not_found_is_skipped_without_retry(session, bot, worker, cha
 
 async def test_flood_control_waits_and_retries(session, bot, worker, chat_with_walis):
     man, woman, conversation, *_ = chat_with_walis
-    bot.fail(woman.telegram_id, TelegramRetryAfter(_METHOD, "Too Many Requests", retry_after=0))
+    bot.fail(woman.telegram_id, TelegramRetryAfter(SEND_METHOD, "Too Many Requests", retry_after=0))
     await chat.send_message(session, conversation.id, man, "Салам", MessageOrigin.WEB)
     await session.commit()
 
@@ -191,7 +155,7 @@ async def test_telegram_outage_pauses_delivery_without_giving_up(session, bot, w
     """A long outage (connection refused, 5xx) must not burn the row's attempts: wali copies and
     notifications are delivered once Telegram is back, in their original order."""
     man, woman, conversation, _, wali_woman = chat_with_walis
-    outage = [TelegramNetworkError(_METHOD, "Cannot connect"), TelegramServerError(_METHOD, "Bad Gateway")] * 10
+    outage = [TelegramNetworkError(SEND_METHOD, "Cannot connect"), TelegramServerError(SEND_METHOD, "Bad Gateway")] * 10
     bot.fail(woman.telegram_id, *outage)
     await chat.send_message(session, conversation.id, man, "Первое", MessageOrigin.WEB)
     await chat.send_message(session, conversation.id, man, "Второе", MessageOrigin.WEB)
@@ -200,7 +164,11 @@ async def test_telegram_outage_pauses_delivery_without_giving_up(session, bot, w
     for _ in range(len(outage)):  # far more than events.MAX_ATTEMPTS
         await worker.process_batch()
         assert worker.telegram_unavailable
-    rows = (await session.scalars(select(Outbox).where(Outbox.sent_at.is_(None)).order_by(Outbox.id))).all()
+    rows = (
+        await session.scalars(
+            select(Outbox).where(Outbox.sent_at.is_(None), Outbox.kind == "message.created").order_by(Outbox.id)
+        )
+    ).all()
     for row in rows:
         await session.refresh(row)
     assert [(row.attempts, row.failed_at, row.next_attempt_at <= utcnow()) for row in rows] == [(0, None, True)] * 2
@@ -235,25 +203,27 @@ async def test_interest_created_accepted_and_declined(session, bot, worker, make
     await session.commit()
     await worker.process_batch()
     [card] = bot.to(woman)
+    assert card.text.startswith("<b>Вами заинтересовалась анкета №500</b>")
     assert "Хочу &lt;познакомиться&gt;" in card.text
-    accept, _, site = buttons(card.reply_markup)
-    assert InterestCb.unpack(accept.callback_data).interest_id == interest.id
-    assert site.url == f"http://testserver/u/{man.id}"
+    accept, decline = buttons(card.reply_markup)
+    assert (accept.callback_data, decline.callback_data) == (f"int:acc:{interest.id}", f"int:dec:{interest.id}")
 
     conversation = await interests.accept(session, interest.id, woman)
     await session.commit()
     await worker.process_batch()
     [accepted] = bot.to(man)
-    assert "Ваш отклик принят 🤲" in accepted.text
-    assert ChatCb.unpack(buttons(accepted.reply_markup)[0].callback_data).conversation_id == conversation.id
+    assert accepted.text.startswith("<b>Чат открыт между анкетами №501 и №500.</b>")
+    [close] = buttons(accepted.reply_markup)
+    assert close.text == "Завершить общение"
+    assert ChatCb.unpack(close.callback_data).conversation_id == conversation.id
 
-    other = (await make_profile(gender=Gender.FEMALE, name="Мариям")).user
+    other = (await make_profile(gender=Gender.FEMALE)).user
     second = await interests.send_interest(session, man, other.id)
     await interests.decline(session, second.id, other)
     await session.commit()
     await worker.process_batch()
     assert bot.to(other) == []  # the interest was declined before delivery: no stale card
-    assert "Не расстраивайтесь" in bot.to(man)[-1].text
+    assert bot.to(man)[-1].text == "Анкета №502 отклонила ваш отклик. Не отчаивайтесь, ин ша Аллах."
 
 
 async def test_conversation_closed_goes_to_the_other_participant(session, bot, worker, make_pair, make_conversation):
@@ -267,7 +237,7 @@ async def test_conversation_closed_goes_to_the_other_participant(session, bot, w
 
     assert bot.to(man) == []
     [closed] = bot.to(woman)
-    assert "завершил общение" in closed.text
+    assert closed.text == "Анкета №500 завершила общение."
 
 
 async def test_profile_submitted_goes_to_admins_and_moderated_to_owner(
@@ -278,7 +248,6 @@ async def test_profile_submitted_goes_to_admins_and_moderated_to_owner(
     owner = await make_user()
     data = ProfileCreate(
         gender=Gender.FEMALE,
-        name="Айша",
         birth_year=1995,
         city="Уфа",
         marital_status="never_married",
@@ -345,7 +314,7 @@ async def test_wali_linked_mid_chat_is_disclosed_to_the_partner(
     [notice] = bot.to(man)
     assert (
         notice.text
-        == f"👁 К переписке с <b>Фатима</b> (#{woman.id}) подключён вали: ваши сообщения в этом чате теперь видны вали."
+        == "👁 К переписке с <b>Анкета №501</b> подключён вали: ваши сообщения в этом чате теперь видны вали."
     )
     assert ChatCb.unpack(buttons(notice.reply_markup)[0].callback_data).conversation_id == conversation.id
     row = await _last_row(session)
@@ -367,7 +336,7 @@ async def test_interest_accepted_by_a_ward_shows_the_badge(session, bot, worker,
 
     await worker.process_batch()
 
-    [accepted] = [item for item in bot.to(man) if "Ваш отклик принят" in item.text]
+    [accepted] = [item for item in bot.to(man) if "Чат открыт" in item.text]
     assert "👁 Вали подключён — переписка видна вали" in accepted.text
 
 
@@ -419,6 +388,7 @@ async def test_queued_cards_and_messages_of_a_banned_user_are_not_delivered(
 
     await worker.process_batch()
 
-    assert bot.to(admin) == []  # the banned reporter's report card is not sent
+    assert not any("Жалоба" in item.text for item in bot.to(admin))  # the banned reporter's report card
+    assert any(item.text.startswith("Чат #") for item in bot.to(admin))  # the witness still sees everything
     assert not any("Сообщение перед баном" in item.text for item in bot.to(woman))
     assert any("Сообщение перед баном" in item.text for item in bot.to(wali_woman))  # oversight copies still go

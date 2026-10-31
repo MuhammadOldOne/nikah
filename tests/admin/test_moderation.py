@@ -25,11 +25,11 @@ async def _status(session, user_id: int) -> Profile:
 
 
 async def test_queue_shows_pending_profiles_only(admin_client, make_profile):
-    pending = await make_profile(gender=Gender.FEMALE, status=ProfileStatus.PENDING, name="Марьям")
-    await make_profile(status=ProfileStatus.ACTIVE, name="Ибрагим")
+    pending = await make_profile(gender=Gender.FEMALE, status=ProfileStatus.PENDING)
+    active = await make_profile(status=ProfileStatus.ACTIVE)
     response = await admin_client.get("/admin/moderation")
     assert response.status_code == 200
-    assert "Марьям" in response.text and "Ибрагим" not in response.text
+    assert f"Анкета №{pending.number}" in response.text and f"Анкета №{active.number}" not in response.text
     assert f'action="/admin/moderation/{pending.user_id}/approve"' in response.text
     assert f'value="{profile_version(pending)}"' in response.text
 
@@ -38,7 +38,6 @@ async def test_queue_highlights_stop_words(admin_client, session, make_user, ove
     user = await make_user()
     data = ProfileCreate(
         gender="female",
-        name="Айша",
         birth_year=1995,
         city="Уфа",
         marital_status="never_married",
@@ -68,7 +67,7 @@ async def test_approve(admin_client, session, make_profile, notifications):
     event = await asyncio.wait_for(notifications.get(), timeout=5)
     assert event["kind"] == "profile.moderated" and event["user_id"] == profile.user_id
     page = await admin_client.get("/admin/moderation")
-    assert f"Анкета #{profile.user_id} опубликована." in page.text
+    assert f"Анкета №{profile.number} опубликована." in page.text
 
 
 async def test_reject_with_preset(admin_client, session, make_profile):

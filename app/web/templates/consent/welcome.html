@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{# Consent for accounts migrated from the Telegram bot. Context: next_url, errors, checked, own_profile. #}
+{% block title %}Согласие на обработку данных — Никах Истина{% endblock %}
+{% block container_class %}container--form{% endblock %}
+{% block content %}
+<div class="stack">
+<section class="card card-pad welcome" aria-labelledby="welcome-title">
+  <div class="center">
+    {{ m.logo('welcome__logo', 96) }}
+    <p class="eyebrow">Ассаляму алейкум!</p>
+    <h1 id="welcome-title">«Никах Истина» теперь — сайт и бот</h1>
+  </div>
+  <p>Telegram-бот @{{ settings.BOT_USERNAME }} стал частью единой платформы «сайт + бот». {% if own_profile %}Ваша <b>{{ profile_title(own_profile) }}</b>, отклики и чаты сохранены — бот работает как раньше, а на сайте теперь тоже можно смотреть анкеты и переписываться.{% else %}Аккаунт общий: всё, что вы сделаете на сайте, видно и в боте.{% endif %}</p>
+  <ul class="welcome__list">
+    <li>{{ m.icon('users', 'icon--sm') }}<span>Знакомство по-прежнему по номеру анкеты — без имён и фото.</span></li>
+    <li>{{ m.icon('eye', 'icon--sm') }}<span>Переписку по-прежнему видит свидетель (махрам/администратор). Теперь можно подключить и своего вали — он будет получать копии переписки.</span></li>
+    {% if own_profile %}<li>{{ m.icon('edit', 'icon--sm') }}<span>В анкете появились новые вопросы (семейное положение, дети, образование, занятость) — их можно дополнить за минуту.</span></li>{% endif %}
+  </ul>
+  <p class="muted">Перед продолжением закон (152-ФЗ) требует вашего отдельного согласия на обработку персональных данных — в том числе сведений о религиозных убеждениях.</p>
+
+  {% if errors %}
+  <div class="flashes">{% call m.alert('error', 'Отметьте оба пункта') %}<p>Без них продолжить нельзя. Если вы не согласны, аккаунт можно удалить ниже.</p>{% endcall %}</div>
+  {% endif %}
+
+  <form class="stack" method="post" action="/welcome">
+    {{ m.csrf_field() }}
+    <input type="hidden" name="next" value="{{ next_url }}">
+    <label class="check{% if errors.get('consent_pd') %} is-invalid{% endif %}">
+      <input type="checkbox" name="consent_pd" value="yes" required{% if checked.get('consent_pd') %} checked{% endif %}{{ m.describedby(errors, 'consent_pd') }}>
+      <span>Даю <a href="/consent" target="_blank" rel="noopener">согласие на обработку персональных данных</a>, включая сведения о моих религиозных убеждениях, чтобы подобрать пару для никаха.</span>
+    </label>
+    {{ m.field_error(errors, 'consent_pd') }}
+    <label class="check{% if errors.get('accept_rules') %} is-invalid{% endif %}">
+      <input type="checkbox" name="accept_rules" value="yes" required{% if checked.get('accept_rules') %} checked{% endif %}{{ m.describedby(errors, 'accept_rules') }}>
+      <span>Принимаю <a href="/rules" target="_blank" rel="noopener">правила сообщества</a> и <a href="/terms" target="_blank" rel="noopener">пользовательское соглашение</a>.</span>
+    </label>
+    {{ m.field_error(errors, 'accept_rules') }}
+    <button class="btn btn-primary btn-lg btn-block" type="submit">Продолжить</button>
+  </form>
+  <p class="small muted mb-0 mt-16">Подробнее — в <a href="/privacy">политике конфиденциальности</a>. Согласие можно отозвать в любой момент, удалив аккаунт.</p>
+</section>
+
+{% with back = "/welcome" %}{% include "partials/delete_account.html" %}{% endwith %}
+</div>
+{% endblock %}

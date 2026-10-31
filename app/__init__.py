@@ -1,1 +1,1 @@
-"""Никах-платформа «Истина»: shared package for the website and the Telegram bot."""
+"""«Никах Истина»: shared package for the website and the Telegram bot."""

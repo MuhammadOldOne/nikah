@@ -13,13 +13,18 @@ async def _fresh_user(session, user_id: int) -> User:
     return user
 
 
-async def test_search_by_id_telegram_id_and_username(admin_client, make_user):
+async def test_search_by_number_telegram_id_and_username(admin_client, make_user, make_profile):
     alice = await make_user(telegram_id=555000111, username="Aisha_K")
     bob = await make_user(telegram_id=555000222, username="aishat")
     other = await make_user(username="ibrahim")
+    sister = await make_profile(alice, gender=Gender.FEMALE, number=512)
+    await make_profile(bob, number=513)
 
-    by_id = await admin_client.get("/admin/users", q=f"#{alice.id}")
-    assert f"/admin/users/{alice.id}" in by_id.text and f"/admin/users/{bob.id}" not in by_id.text
+    for query in ("№512", "#512", "№ 512", "512"):
+        found = await admin_client.get("/admin/users", q=query)
+        assert f"/admin/users/{alice.id}" in found.text and f"/admin/users/{bob.id}" not in found.text, query
+        assert "Анкета №512" in found.text
+    assert "Никого не нашли" in (await admin_client.get("/admin/users", q=f"#{alice.id}")).text  # not an internal id
 
     by_telegram = await admin_client.get("/admin/users", q="555000222")
     assert f"/admin/users/{bob.id}" in by_telegram.text and f"/admin/users/{alice.id}" not in by_telegram.text
@@ -30,20 +35,28 @@ async def test_search_by_id_telegram_id_and_username(admin_client, make_user):
     exact = await admin_client.get("/admin/users", q="aisha_")
     assert f"/admin/users/{alice.id}" in exact.text and f"/admin/users/{bob.id}" not in exact.text
 
+    without_profile = await admin_client.get("/admin/users", q="@ibrahim")
+    assert "аккаунт без анкеты" in without_profile.text and f"/admin/users/{other.id}" in without_profile.text
+
     nothing = await admin_client.get("/admin/users", q="@nobody")
     assert "Никого не нашли" in nothing.text
-    invalid = await admin_client.get("/admin/users", q="Фатима; drop table")
-    assert "Не понимаю запрос" in invalid.text
+    for invalid_query in ("Фатима; drop table", "№99999999999"):
+        invalid = await admin_client.get("/admin/users", q=invalid_query)
+        assert invalid.status_code == 200 and "Не понимаю запрос" in invalid.text, invalid_query
+    # Too big for any id column: no database error (looked up as a username prefix).
+    huge = await admin_client.get("/admin/users", q="9" * 20)
+    assert huge.status_code == 200 and "Никого не нашли" in huge.text
+    assert sister.number == 512
 
 
 async def test_user_card_never_shows_phone(admin_client, session, make_profile):
-    profile = await make_profile(gender=Gender.FEMALE, name="Хадиджа")
+    profile = await make_profile(gender=Gender.FEMALE)
     user = await _fresh_user(session, profile.user_id)
     user.phone = "+79991234567"
     await session.commit()
     response = await admin_client.get(f"/admin/users/{user.id}")
     assert response.status_code == 200
-    assert "Хадиджа" in response.text and str(user.telegram_id) in response.text
+    assert f"Анкета №{profile.number}" in response.text and str(user.telegram_id) in response.text
     assert "79991234567" not in response.text and "+7" not in response.text
     search = await admin_client.get("/admin/users", q=str(user.telegram_id))
     assert "79991234567" not in search.text

@@ -1,8 +1,8 @@
 {% extends "admin/base.html" %}
-{% block title %}Пользователь #{{ user.id }}{% endblock %}
+{% block title %}{{ user_title(user)|capitalize }}{% endblock %}
 {% block content %}
 <p><a href="/admin/users">← Поиск пользователей</a></p>
-<h1>{{ user.profile.name if user.profile else user.display_name }} <span class="adm-muted">#{{ user.id }}</span>
+<h1>{{ user_title(user)|capitalize }}
   {% if user.is_banned %}<span class="adm-tag adm-tag--danger">заблокирован</span>{% endif %}
   {% if is_target_admin %}<span class="adm-tag">админ</span>{% endif %}
 </h1>
@@ -26,7 +26,7 @@
     <dl class="adm-fields">
       <div class="adm-field"><dt>Жалобы на пользователя</dt><dd>{{ reports_total }}</dd></div>
       <div class="adm-field"><dt>Жалобы от пользователя</dt><dd>{{ reports_filed }}</dd></div>
-      <div class="adm-field"><dt>Сообщения со стоп-словами</dt><dd>{{ flagged_messages }}</dd></div>
+      <div class="adm-field"><dt>Помеченные сообщения</dt><dd>{{ flagged_messages }}</dd></div>
     </dl>
     {% if user.is_banned %}
     <form method="post" action="/admin/users/{{ user.id }}/unban" class="adm-actions">
@@ -64,6 +64,13 @@
   <p class="adm-empty">Анкеты нет.</p>
   {% endif %}
 </section>
+
+{% if chats %}
+<section class="adm-panel">
+  <h2>Чаты{% if chats|length >= 20 %} (последние 20){% endif %}</h2>
+  {% set rows = chats %}{% include "admin/_chats_table.html" %}
+</section>
+{% endif %}
 
 {% if reports %}
 <section class="adm-panel">

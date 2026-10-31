@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Чат{% if partner_profile %} с {{ partner_profile.name }}{% endif %} — Истина{% endblock %}
+{% block title %}Чат{% if partner_profile %}: {{ profile_title(partner_profile) }}{% endif %} — Никах Истина{% endblock %}
 {% block head %}<script src="{{ static_url('js/chat.js') }}" defer></script>{% endblock %}
 {% block stream_url %}/chats/{{ conversation.id }}/stream{% endblock %}
 {% block page_class %}page--chat{% endblock %}
@@ -9,7 +9,7 @@
 {% set is_open = conversation.closed_at is none and partner is not none %}
 <section class="chat" id="chat" aria-label="Переписка"
   data-messages-url="/chats/{{ conversation.id }}/messages"
-  data-partner="{{ partner_profile.name if partner_profile else 'Собеседник' }}"
+  data-partner="{{ profile_title(partner_profile) if partner_profile else 'Собеседник' }}"
   data-last-id="{{ messages[-1].id if messages else 0 }}"
   data-open="{{ '1' if is_open else '0' }}">
   <header class="chat__header">
@@ -17,9 +17,9 @@
     {{ m.avatar(partner_profile.gender if partner_profile else 'male', 'sm') }}
     <div class="chat__who">
       {% if partner %}
-      {% if partner_profile %}<a href="/u/{{ partner.id }}">{{ partner_profile.name }}</a>
+      {% if partner_profile %}<a href="/p/{{ partner_profile.number }}">{{ profile_title(partner_profile) }} — {{ gender_word(partner_profile.gender) }}</a>
       <span class="muted">{{ partner_profile.birth_year|age }} {{ plural(partner_profile.birth_year|age, 'год', 'года', 'лет') }} · {{ partner_profile.city }}</span>
-      {% else %}<span>{{ partner.display_name }}</span>{% endif %}
+      {% else %}<span>Анкета удалена</span>{% endif %}
       {% else %}
       <span>Аккаунт удалён</span>
       {% endif %}
@@ -39,7 +39,8 @@
         {% endif %}
         <form method="post" action="/chats/{{ conversation.id }}/report">
           {{ m.csrf_field() }}
-          <h3>Пожаловаться</h3>
+          <h3>Пожаловаться на собеседника</h3>
+          <p class="small muted mb-0">На отдельное сообщение — кнопкой «Пожаловаться» под ним.</p>
           <label class="visually-hidden" for="report-reason">Причина</label>
           <select class="select" id="report-reason" name="reason" required>
             <option value="">Причина жалобы</option>
@@ -54,16 +55,20 @@
     {% endif %}
   </header>
 
+  <div class="chat__witness">{{ m.icon('eye', 'icon--sm') }}<span>Переписку видит свидетель (махрам/администратор)</span></div>
   {% set flashes = pop_flashes() %}
   {% for item in flashes %}
-  <div class="chat__notice" role="status">{{ m.icon('info') }}<span>{{ item.message }}</span></div>
+  <div class="chat__notice{% if item.level == 'error' %} chat__notice--error{% endif %}" role="{{ 'alert' if item.level == 'error' else 'status' }}">{{ m.icon('alert' if item.level in ('error', 'warning') else 'info') }}<span>{{ item.message }}</span></div>
   {% endfor %}
   {# Always rendered: chat.js reveals it when a wali is linked while the page is open. #}
   <div class="chat__notice" id="wali-notice" role="status"{% if not wali_watching %} hidden{% endif %}><span>👁 Вали подключён — переписка видна вали.</span></div>
+  {% if composer_error and not is_open %}
+  <div class="chat__notice chat__notice--error" role="alert">{{ m.icon('alert') }}<span>{{ composer_error }}</span></div>
+  {% endif %}
   {% if partner is none %}
   <div class="chat__notice chat__notice--closed">{{ m.icon('lock') }}<span>Собеседник удалил аккаунт. Переписка закрыта.</span></div>
   {% elif conversation.closed_at %}
-  <div class="chat__notice chat__notice--closed">{{ m.icon('lock') }}<span>{{ label(conversation.close_reason) if conversation.close_reason else 'Общение завершено' }} · {{ conversation.closed_at|msk_date }}. Писать в этот чат нельзя.</span></div>
+  <div class="chat__notice chat__notice--closed">{{ m.icon('lock') }}<span>{{ conversation.closed_at|msk_date }}: {{ m.close_reason(conversation, user) }} Писать в этот чат нельзя.</span></div>
   {% endif %}
 
   {# Screen readers hear the partner's new messages (not the history or one's own). #}
@@ -73,18 +78,19 @@
     <li class="messages__more js-only-block"><button class="btn btn-ghost" type="button" id="load-older" data-before-id="{{ messages[0].id }}">Показать ранние сообщения</button></li>
     {% endif %}
     {% if not messages %}
-    <li class="messages__empty" id="messages-empty">{% if is_open %}Отклик принят. Начните с приветствия — «Ассаляму алейкум». Помните о скромности и не просите денег.{% else %}Сообщений нет.{% endif %}</li>
+    <li class="messages__empty" id="messages-empty">{% if is_open %}Отклик принят. Начните с приветствия — «Ассаляму алейкум». Помните о скромности и не просите денег. Телефоны, ссылки и @юзернеймы скрываются фильтром.{% else %}Сообщений нет.{% endif %}</li>
     {% endif %}
     {% include "chats/_messages.html" %}
   </ol>
 
   {% if is_open %}
+  <p class="composer-status{% if composer_error %} is-error{% endif %}" id="composer-status" role="{{ 'alert' if composer_error else 'status' }}"{% if not composer_error %} hidden{% endif %}>{{ composer_error or '' }}</p>
   <form class="composer" id="composer" method="post" action="/chats/{{ conversation.id }}/messages">
     {{ m.csrf_field() }}
     <input type="hidden" name="after_id" value="{{ messages[-1].id if messages else 0 }}">
     <div class="composer__field">
       <label class="visually-hidden" for="composer-text">Сообщение</label>
-      <textarea id="composer-text" name="text" rows="1" maxlength="{{ message_max }}" required placeholder="Сообщение…" data-counter="{{ message_max }}" data-counter-from="1500"></textarea>
+      <textarea id="composer-text" name="text" rows="1" maxlength="{{ message_max }}" required placeholder="Сообщение…" data-counter="{{ message_max }}" data-counter-from="1500"{% if composer_error %} aria-invalid="true" aria-describedby="composer-status"{% endif %}>{{ draft }}</textarea>
     </div>
     <button class="btn btn-primary" type="submit" aria-label="Отправить">{{ m.icon('send') }}</button>
   </form>

@@ -12,7 +12,9 @@ from pydantic import ValidationError
 
 from app.schemas import CatalogFilters, humanize_errors
 from app.services import guardians, profiles
+from app.services.errors import ProfileNotActive
 from app.web.deps import ProfileUserDep, RedirectTo, SessionDep, is_partial
+from app.web.gates import profile_gate
 from app.web.render import render, render_partial
 
 router = APIRouter()
@@ -56,7 +58,10 @@ async def catalog(request: Request, session: SessionDep, user: ProfileUserDep) -
     params = dict(request.query_params)
     filters, filter_errors = parse_filters(params)
     page = parse_page(params.get("page"))
-    items, total = await profiles.list_catalog(session, user, filters, page=page, per_page=PER_PAGE)
+    try:
+        items, total = await profiles.list_catalog(session, user, filters, page=page, per_page=PER_PAGE)
+    except ProfileNotActive as exc:  # e.g. the profile is still on moderation: say why
+        return await profile_gate(request, session, user, exc)
     pages = max(math.ceil(total / PER_PAGE), 1)
     active = {name: params[name].strip() for name in FILTER_FIELDS if params.get(name, "").strip()}
     if page > pages:  # e.g. an old ?page=N after profiles left: go to the last page, same filters

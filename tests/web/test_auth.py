@@ -43,8 +43,8 @@ async def test_dev_login_creates_account_and_sends_to_wizard(client, dev_login, 
 
 async def test_login_redirects_to_safe_next_only(client, dev_login, make_profile):
     profile = await make_profile()
-    ok = await dev_login(client, profile.user, next="/u/5?x=1")
-    assert ok.status_code == 303 and ok.headers["location"] == "/u/5?x=1"
+    ok = await dev_login(client, profile.user, next="/p/5?x=1")
+    assert ok.status_code == 303 and ok.headers["location"] == "/p/5?x=1"
     for evil in ("https://evil.example/", "//evil.example", "/\\evil.example", "javascript:alert(1)"):
         client.cookies.clear()
         response = await dev_login(client, profile.user, next=evil)

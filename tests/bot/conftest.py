@@ -3,8 +3,10 @@ api.telegram.org, a fresh Dispatcher per test, and helpers that feed updates thr
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -16,6 +18,7 @@ from aiogram.types import CallbackQuery, Chat, Message, PhotoSize, Update
 from aiogram.types import User as TelegramUser
 
 from app.bot.dispatcher import create_bot, create_dispatcher
+from app.bot.outbox import OutboxWorker
 from app.models import User
 
 BOT_ID = 42
@@ -65,11 +68,11 @@ class BotHarness:
             return TelegramUser(id=user, is_bot=False, first_name="Гость")
         return TelegramUser(id=user.telegram_id, is_bot=False, first_name=user.first_name, username=user.username)
 
-    def _message(self, sender: TelegramUser, **content: Any) -> Message:
+    def _message(self, sender: TelegramUser, chat: Chat | None = None, **content: Any) -> Message:
         return Message(
             message_id=next(self._ids),
             date=datetime.now(UTC),
-            chat=Chat(id=sender.id, type="private"),
+            chat=chat or Chat(id=sender.id, type="private"),
             from_user=sender,
             **content,
         )
@@ -77,9 +80,13 @@ class BotHarness:
     async def feed(self, update: Update) -> Any:
         return await self.dispatcher.feed_update(self.bot, update)
 
-    async def text(self, user: User | int, text: str, *, reply_to: Message | None = None) -> None:
+    async def text(
+        self, user: User | int, text: str, *, reply_to: Message | None = None, group_id: int | None = None
+    ) -> None:
+        """A text from ``user`` in the private chat, or in the group ``group_id``."""
         sender = self.account(user)
-        message = self._message(sender, text=text, reply_to_message=reply_to)
+        chat = Chat(id=group_id, type="supergroup") if group_id is not None else None
+        message = self._message(sender, chat, text=text, reply_to_message=reply_to)
         await self.feed(Update(update_id=next(self._ids), message=message))
 
     def bot_message(self, user: User | int, text: str, reply_markup: Any = None) -> Message:
@@ -100,13 +107,23 @@ class BotHarness:
         photo = [PhotoSize(file_id="file", file_unique_id="unique", width=10, height=10)]
         await self.feed(Update(update_id=next(self._ids), message=self._message(sender, photo=photo, caption=caption)))
 
-    async def press(self, user: User | int, data: str, message_text: str = "…") -> None:
+    async def press(
+        self,
+        user: User | int,
+        data: str,
+        message_text: str = "…",
+        *,
+        group_id: int | None = None,
+        message_date: datetime | None = None,
+    ) -> None:
+        """A press on a button of a bot message in the private chat (or in the group ``group_id``)."""
         sender = self.account(user)
         bot_user = TelegramUser(id=BOT_ID, is_bot=True, first_name="Истина")
+        chat = Chat(id=group_id, type="supergroup") if group_id is not None else Chat(id=sender.id, type="private")
         message = Message(
             message_id=next(self._ids),
-            date=datetime.now(UTC),
-            chat=Chat(id=sender.id, type="private"),
+            date=message_date or datetime.now(UTC),
+            chat=chat,
             from_user=bot_user,
             text=message_text,
         )
@@ -118,6 +135,7 @@ class BotHarness:
     # --- What the bot did --------------------------------------------------------------------
 
     def sent(self, user: User | int | None = None) -> list[SendMessage]:
+        """Messages sent to ``user`` (a User or a raw chat id, e.g. a group)."""
         chat_id = None if user is None else self.account(user).id
         return [
             method
@@ -148,6 +166,11 @@ class BotHarness:
         self.api.requests.clear()
 
 
+def menu_labels(markup: Any) -> list[list[str]]:
+    """Rows of a reply keyboard's labels."""
+    return [[button.text for button in row] for row in markup.keyboard]
+
+
 def buttons(markup: Any) -> list[Any]:
     """All inline buttons of a markup, flattened."""
     return [button for row in (markup.inline_keyboard if markup else []) for button in row]
@@ -165,3 +188,48 @@ def button_data(markup: Any, text_part: str) -> str:
 def harness() -> BotHarness:
     session = RecordingSession()
     return BotHarness(create_bot("42:TEST-TOKEN", session=session), create_dispatcher(), session)
+
+
+# --- Outbox worker with a fake Bot ---------------------------------------------------------------
+
+SEND_METHOD = SendMessage(chat_id=1, text="x")  # for building Telegram exceptions
+
+
+@dataclass
+class Sent:
+    chat_id: int
+    text: str
+    reply_markup: Any
+
+
+class FakeBot:
+    """Records send_message calls; ``fail(chat_id, exc, ...)`` makes the next sends to that chat raise."""
+
+    def __init__(self) -> None:
+        self.sent: list[Sent] = []
+        self.delivered = asyncio.Event()
+        self._failures: dict[int, list[Exception]] = {}
+
+    def fail(self, chat_id: int, *errors: Exception) -> None:
+        self._failures.setdefault(chat_id, []).extend(errors)
+
+    async def send_message(self, chat_id: int, text: str, reply_markup: Any = None, **_: Any) -> None:
+        if self._failures.get(chat_id):
+            raise self._failures[chat_id].pop(0)
+        self.sent.append(Sent(chat_id, text, reply_markup))
+        self.delivered.set()
+
+    def to(self, user: User | int) -> list[Sent]:
+        """Messages sent to ``user`` (a User or a raw chat id such as the witness group)."""
+        chat_id = user if isinstance(user, int) else user.telegram_id
+        return [item for item in self.sent if item.chat_id == chat_id]
+
+
+@pytest.fixture
+def bot() -> FakeBot:
+    return FakeBot()
+
+
+@pytest.fixture
+def worker(bot: FakeBot) -> OutboxWorker:
+    return OutboxWorker(bot, send_delay=0)  # type: ignore[arg-type]

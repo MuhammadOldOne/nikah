@@ -11,15 +11,16 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.interfaces import LoaderOption
 
 from app.clock import utcnow
-from app.enums import ProfileStatus, ReportAction, ReportReason, ReportStatus
+from app.enums import MessageKind, ProfileStatus, ReportAction, ReportReason, ReportStatus
 from app.models import Conversation, Interest, Message, Report, User
 from app.schemas import ReportIn, first_error
-from app.services import events, profiles, users
+from app.services import chat, events, profiles, users
 from app.services.errors import (
     AlreadyReported,
+    ConsentRequired,
     DomainError,
     InvalidInput,
-    NotFound,
+    MessageNotFound,
     PermissionDenied,
     ReportAlreadyResolved,
     ReportLimitReached,
@@ -43,6 +44,10 @@ __all__ = [
 REPORT_DAILY_LIMIT = 5
 REPORT_LIMIT_WINDOW = timedelta(hours=24)
 HIDE_PROFILE_NOTE = "Анкета скрыта модератором по жалобе. Исправьте анкету, и она снова уйдёт на проверку."
+REPORT_FLAG_REASON = "user report"
+# Profile flag set by scripts/import_legacy.py: the legacy age gave a birth year outside 18–80, so
+# it was clamped into the range and the profile was sent back to moderation.
+LEGACY_AGE_FLAG_REASON = "legacy age"
 
 
 async def create_report(
@@ -53,12 +58,18 @@ async def create_report(
     comment: str | None = None,
     message_id: int | None = None,
 ) -> Report:
-    """Report a user (optionally a specific message of theirs from a shared conversation).
+    """Report a user, or a message of theirs («Пожаловаться» under a chat message).
 
-    Only someone the reporter has met on the platform can be reported: a profile they can see in
-    the catalog, or a person they have exchanged an interest or a chat with. One open report per
-    reporter/target pair, at most REPORT_DAILY_LIMIT reports per reporter in 24 hours.
-    Reported users disappear from each other's catalog.
+    - A message report needs only that the message is the target's (a participant message) in a
+      conversation of the reporter (open or closed), and is accepted once per message. It is
+      never limited otherwise and works without consent: a participant can always report a
+      message in their own chat. The message is flagged ('user report').
+    - Any other report needs consent and someone the reporter has met on the platform (a profile
+      they can see in the catalog, or a person they exchanged an interest or a chat with); one
+      open report per reporter/target pair, at most REPORT_DAILY_LIMIT such reports in 24 hours.
+
+    Reported users disappear from each other's catalog. Emits ``report.created`` (admins) and
+    ``witness.report`` (the witness chat).
     """
     if reporter.is_banned:
         raise UserBanned()
@@ -72,32 +83,44 @@ async def create_report(
     await session.execute(select(User.id).where(User.id == reporter.id).with_for_update(key_share=True))
     if await session.get(User, target_user_id) is None:
         raise UserNotFound()
-    duplicate = exists().where(
-        Report.reporter_id == reporter.id,
-        Report.target_user_id == target_user_id,
-        Report.status == ReportStatus.OPEN,
-    )
-    if await session.scalar(select(duplicate)):
-        raise AlreadyReported()
+    message: Message | None = None
     if message_id is not None:
-        message = await session.get(Message, message_id)
+        message = await session.get(Message, message_id, with_for_update={"key_share": True}, populate_existing=True)
         conversation = await session.get(Conversation, message.conversation_id) if message else None
         if (
             message is None
             or conversation is None
+            or message.kind != MessageKind.USER
             or message.sender_id != target_user_id
             or not conversation.is_participant(reporter.id)
         ):
-            raise NotFound("Сообщение не найдено.")
-    if not await _has_met(session, reporter, target_user_id):
-        raise UserNotFound()
-    reported_recently = await session.scalar(
-        select(func.count())
-        .select_from(Report)
-        .where(Report.reporter_id == reporter.id, Report.created_at > func.now() - REPORT_LIMIT_WINDOW)
-    )
-    if (reported_recently or 0) >= REPORT_DAILY_LIMIT:
-        raise ReportLimitReached()
+            raise MessageNotFound()
+        duplicate = exists().where(Report.reporter_id == reporter.id, Report.message_id == message_id)
+        if await session.scalar(select(duplicate)):
+            raise AlreadyReported("Вы уже пожаловались на это сообщение. Свидетель и модератор его рассмотрят.")
+    else:
+        if reporter.consent_at is None:
+            raise ConsentRequired()
+        duplicate = exists().where(
+            Report.reporter_id == reporter.id,
+            Report.target_user_id == target_user_id,
+            Report.status == ReportStatus.OPEN,
+        )
+        if await session.scalar(select(duplicate)):
+            raise AlreadyReported()
+        if not await _has_met(session, reporter, target_user_id):
+            raise UserNotFound()
+        reported_recently = await session.scalar(
+            select(func.count())
+            .select_from(Report)
+            .where(
+                Report.reporter_id == reporter.id,
+                Report.message_id.is_(None),
+                Report.created_at > func.now() - REPORT_LIMIT_WINDOW,
+            )
+        )
+        if (reported_recently or 0) >= REPORT_DAILY_LIMIT:
+            raise ReportLimitReached()
     report = Report(
         reporter_id=reporter.id,
         target_user_id=target_user_id,
@@ -106,6 +129,8 @@ async def create_report(
         comment=data.comment,
     )
     session.add(report)
+    if message is not None:
+        chat.flag_message(message, REPORT_FLAG_REASON)
     await session.flush()
     await events.emit(
         session,
@@ -117,6 +142,7 @@ async def create_report(
             "message_id": message_id,
         },
     )
+    await events.emit(session, events.EventKind.WITNESS_REPORT, {"report_id": report.id, "message_id": message_id})
     return report
 
 
@@ -208,7 +234,8 @@ async def resolve_report(session: AsyncSession, report_id: int, admin: User, act
 
 
 async def list_flagged_messages(session: AsyncSession, *, limit: int = 50, offset: int = 0) -> list[Message]:
-    """Chat messages with stop words, newest first, ``sender`` (with profile) loaded."""
+    """Flagged chat messages (stop words, contact filter, witness, reports), newest first,
+    ``sender`` (with profile) loaded."""
     result = await session.scalars(
         select(Message)
         .where(Message.flagged.is_(True))

@@ -33,8 +33,14 @@ CSRF_HEADER = "X-CSRF-Token"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 DB_ID_MAX = 2**63 - 1  # ids are BIGINT: larger numbers are a bad request, not a database error
 
-# Ids in URLs (``/u/{user_id:int}`` etc.): out-of-range values get the 400 page.
+PROFILE_NUMBER_MAX = 2**31 - 1  # profiles.number is INTEGER
+
+# Ids (``/chats/{id:int}``) and profile numbers (``/p/{number:int}``) in URLs: out-of-range values
+# get the 400 page, not a database error.
 IdPath = Annotated[int, Path(ge=1, le=DB_ID_MAX)]
+NumberPath = Annotated[int, Path(ge=1, le=PROFILE_NUMBER_MAX)]
+# Where people who have not given consent yet are sent (accounts migrated from the legacy bot).
+CONSENT_PAGE = "/welcome"
 
 # scope="function": the session commits right after the endpoint returns, before the response is
 # sent, so a redirect never reaches the browser before its data is committed. Always use this alias
@@ -66,9 +72,19 @@ def safe_next_url(value: str | None, default: str = "/") -> str:
     return value
 
 
+def _current_path(request: Request) -> str:
+    return request.url.path + (f"?{request.url.query}" if request.url.query else "")
+
+
 def login_redirect_url(request: Request) -> str:
-    path = request.url.path + (f"?{request.url.query}" if request.url.query else "")
-    return f"/login?next={quote(path, safe='')}"
+    return f"/login?next={quote(_current_path(request), safe='')}"
+
+
+def consent_redirect_url(request: Request) -> str:
+    """The consent page, coming back to this page afterwards (GET only: a form is not resent)."""
+    if request.method != "GET" or is_partial(request):
+        return CONSENT_PAGE
+    return f"{CONSENT_PAGE}?next={quote(_current_path(request), safe='')}"
 
 
 async def current_user(request: Request, session: SessionDep) -> User | None:
@@ -98,27 +114,40 @@ async def require_login(request: Request, user: OptionalUserDep) -> User:
     return user
 
 
-async def require_user(user: Annotated[User, Depends(require_login)]) -> User:
-    """A logged-in, not banned user."""
+async def require_account(user: Annotated[User, Depends(require_login)]) -> User:
+    """A logged-in, not banned user, whether or not they have given consent yet (the profile wizard
+    and the consent page collect it; administrators work as the operator)."""
     if user.is_banned:
         raise AccountBanned()
     return user
 
 
+async def require_user(request: Request, user: Annotated[User, Depends(require_account)]) -> User:
+    """A logged-in, not banned user who has given consent to personal data processing.
+
+    Accounts migrated from the legacy bot have none (152-FZ: a separate consent, asked at the first
+    visit): every page that needs this guard sends them to the consent page first. People without
+    a profile go to the profile wizard instead, which asks for the same consent."""
+    if users.needs_consent(user):
+        raise RedirectTo(consent_redirect_url(request) if user.profile is not None else "/profile/new")
+    return user
+
+
 async def require_profile(user: Annotated[User, Depends(require_user)]) -> User:
-    """A logged-in user who has a profile (any status); otherwise redirect to /profile/new."""
+    """A consenting user who has a profile (any status); otherwise redirect to /profile/new."""
     if user.profile is None:
         raise RedirectTo("/profile/new")
     return user
 
 
-async def require_admin(user: Annotated[User, Depends(require_user)]) -> User:
+async def require_admin(user: Annotated[User, Depends(require_account)]) -> User:
     if not users.is_admin(user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Недостаточно прав.")
     return user
 
 
 LoginDep = Annotated[User, Depends(require_login)]
+AccountDep = Annotated[User, Depends(require_account)]
 UserDep = Annotated[User, Depends(require_user)]
 ProfileUserDep = Annotated[User, Depends(require_profile)]
 AdminDep = Annotated[User, Depends(require_admin)]

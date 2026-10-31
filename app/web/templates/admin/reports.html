@@ -29,11 +29,12 @@
     <div class="adm-field adm-field--wide"><dt>Комментарий</dt><dd class="adm-text">{{ report.comment }}</dd></div>
     {% endif %}
     <div class="adm-field adm-field--wide">
-      <dt>{% if report.message %}Сообщение ({{ report.message.created_at|msk }}){% else %}Предмет жалобы{% endif %}</dt>
+      <dt>{% if report.message %}Жалоба на сообщение ({{ report.message.created_at|msk }}, {{ am.chat_link(report.message.conversation_id, report.message.id) }}){% else %}Предмет жалобы{% endif %}</dt>
       <dd>
         {% if report.message %}
+        {{ am.flags(report.message.flag_reason) }}
         <blockquote class="adm-quote adm-text">{{ highlight(excerpt(report.message.text)) }}</blockquote>
-        {% else %}<span class="adm-muted">анкета или поведение в целом (без конкретного сообщения)</span>{% endif %}
+        {% else %}<span class="adm-muted">анкета или поведение в целом (без конкретного сообщения или сообщение уже удалено)</span>{% endif %}
       </dd>
     </div>
   </dl>
@@ -57,7 +58,7 @@
   </details>
   {% endif %}
   {% else %}
-  <p class="adm-meta">Решение: <b>{{ label(report.resolution) }}</b> · {{ report.resolved_at|msk }}{% if report.resolved_by_id %} · модератор #{{ report.resolved_by_id }}{% endif %}</p>
+  <p class="adm-meta">Решение: <b>{{ label(report.resolution) }}</b> · {{ report.resolved_at|msk }}{% if report.resolved_by_id %} · <a href="/admin/users/{{ report.resolved_by_id }}">модератор</a>{% endif %}</p>
   {% endif %}
 </article>
 {% else %}

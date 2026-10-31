@@ -1,0 +1,14 @@
+# The Telegram proxy runs on this server and listens on 127.0.0.1 (as for the old bot), which a
+# container cannot reach on its own network. The bot therefore shares the host's network: the
+# same TELEGRAM_PROXY=http://127.0.0.1:<порт> works unchanged. It reaches PostgreSQL through a port
+# published on 127.0.0.1 only (never on the public interface). docs/DEPLOY.md, «Прокси Telegram».
+# Enable in .env, e.g. COMPOSE_FILE=docker-compose.yml:docker-compose.hostproxy.yml
+services:
+  db:
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+
+  bot:
+    network_mode: host
+    environment:
+      DATABASE_URL: postgresql+asyncpg://nikah:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@127.0.0.1:${POSTGRES_HOST_PORT:-5432}/nikah

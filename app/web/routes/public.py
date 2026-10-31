@@ -14,10 +14,14 @@ router = APIRouter()
 
 @router.get("/")
 async def landing(request: Request, session: SessionDep, user: OptionalUserDep) -> HTMLResponse:
-    counts = await profiles.public_counts(session)
-    return await render(
-        request, "landing.html", {"counts": counts}, session=session, user=None if user and user.is_banned else user
-    )
+    viewer = None if user and user.is_banned else user
+    profile = viewer.profile if viewer else None
+    context = {
+        "counts": await profiles.public_counts(session),
+        # Logged-in owners of a profile migrated from the bot are offered «Дополнить анкету».
+        "missing": profiles.missing_fields(profile) if profile else [],
+    }
+    return await render(request, "landing.html", context, session=session, user=viewer)
 
 
 @router.get("/blocked")

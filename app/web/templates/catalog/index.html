@@ -1,16 +1,17 @@
 {% extends "base.html" %}
-{% block title %}Анкеты — Истина{% endblock %}
+{% block title %}Анкеты — Никах Истина{% endblock %}
 {% block content %}
 {% set seeking = own_profile.gender.opposite %}
 <div class="page-head">
   <div>
     <h1>Анкеты {{ gendered(seeking, 'братьев', 'сестёр') }}</h1>
-    <p class="muted">Без фото — только то, что человек рассказал о себе.</p>
+    <p class="muted">Без имён и фото — по номеру анкеты и тому, что человек рассказал о себе.</p>
   </div>
 </div>
 
+{# With PREMODERATION on, people whose own profile is not published get the gate page instead. #}
 {% if own_profile.status.value == 'pending' %}
-<div class="flashes">{% call m.alert('warning', 'Ваша анкета на модерации') %}<p>Смотреть анкеты можно уже сейчас, а откликаться — после публикации. Обычно проверка занимает до суток.</p>{% endcall %}</div>
+<div class="flashes">{% call m.alert('warning', 'Ваша анкета на модерации') %}<p>Откликаться можно после публикации. Обычно проверка занимает до суток.</p>{% endcall %}</div>
 {% elif own_profile.status.value == 'hidden' %}
 <div class="flashes">{% call m.alert('info', 'Ваша анкета скрыта') %}<p>Другие вас не видят, и откликаться нельзя. <a href="/me">Показать анкету</a></p>{% endcall %}</div>
 {% elif own_profile.status.value == 'rejected' %}

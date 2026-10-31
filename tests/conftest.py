@@ -170,7 +170,9 @@ def make_user(session: AsyncSession) -> MakeUser:
 def make_profile(session: AsyncSession, make_user: MakeUser) -> MakeProfile:
     """Create and commit a valid profile (ACTIVE and approved by default) for ``user`` or a new user.
 
-    Extra keyword arguments override profile fields (e.g. ``birth_year=1990, city="Казань"``).
+    Extra keyword arguments override profile fields (e.g. ``birth_year=1990, city="Казань"``,
+    ``number=512``, or ``marital_status=None`` for a migrated-like incomplete profile). Numbers
+    come from the sequence: 500, 501, … in each test.
     """
 
     async def factory(
@@ -183,7 +185,6 @@ def make_profile(session: AsyncSession, make_user: MakeUser) -> MakeProfile:
         user = user or await make_user()
         now = utcnow()
         values: dict[str, Any] = {
-            "name": "Ахмад" if gender == Gender.MALE else "Фатима",
             "birth_year": current_year() - 30,
             "city": "Казань",
             "marital_status": MaritalStatus.NEVER_MARRIED,

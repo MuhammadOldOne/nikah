@@ -42,7 +42,7 @@ async def test_create_report(session, make_pair):
     with pytest.raises(AlreadyReported):
         await moderation.create_report(session, woman, man.id, ReportReason.OTHER)
     loaded = await moderation.get_report(session, report.id)
-    assert loaded.target_user.profile.name == "Ахмад"
+    assert loaded.target_user.profile.gender == Gender.MALE
 
 
 async def test_report_rules(session, make_pair, make_user):
@@ -135,7 +135,7 @@ async def test_list_flagged_messages(session, make_pair, make_conversation):
     bad = await chat.send_message(session, conversation.id, man, "Нужна предоплата", MessageOrigin.WEB)
     flagged = await moderation.list_flagged_messages(session)
     assert [m.id for m in flagged] == [bad.id]
-    assert flagged[0].sender.profile.name == "Ахмад"
+    assert flagged[0].sender.profile.gender == Gender.MALE
 
 
 @pytest.mark.parametrize(

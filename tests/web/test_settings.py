@@ -67,8 +67,8 @@ async def test_state_changing_requests_require_csrf(client, dev_login, make_pair
     for path in (
         "/settings/wali/invite",
         "/settings/notifications",
-        f"/u/{woman.id}/interest",
-        f"/u/{woman.id}/report",
+        f"/p/{woman.profile.number}/interest",
+        f"/p/{woman.profile.number}/report",
         f"/chats/{conversation.id}/messages",
         f"/chats/{conversation.id}/close",
         "/me/hide",

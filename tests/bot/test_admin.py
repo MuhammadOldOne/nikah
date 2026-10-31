@@ -7,6 +7,7 @@ from app.bot.callbacks import AdminProfileAction, AdminProfileCb, AdminReportAct
 from app.enums import Gender, ProfileStatus, ReportReason, ReportStatus
 from app.services import moderation, profiles
 from app.services.errors import PermissionDenied
+from tests.bot.conftest import buttons
 
 
 def _profile_cb(profile, action: AdminProfileAction, **extra) -> str:
@@ -131,3 +132,56 @@ async def test_admin_hides_reported_profile(harness, session, make_pair, make_us
     profile = await profiles.get_profile(session, man.id)
     await session.refresh(profile)
     assert profile.status == ProfileStatus.REJECTED
+
+
+async def test_admin_command_sends_the_moderation_queue(harness, make_profile, make_user):
+    admin = await make_user(is_admin=True)
+    await harness.text(admin, "/admin")
+    assert harness.last_text(admin) == "Очередь модерации пуста."
+
+    await make_profile(gender=Gender.FEMALE, status=ProfileStatus.PENDING)
+    await make_profile(gender=Gender.MALE, status=ProfileStatus.PENDING)
+    harness.clear()
+    await harness.text(admin, "/admin")
+    head, *cards = harness.texts(admin)
+    assert head == "Анкет в очереди: 2. Высылаю..."
+    assert [card.split("\n\n")[1].split("\n")[0] for card in cards] == [
+        "<b>Анкета №500</b> — Сестра",
+        "<b>Анкета №501</b> — Брат",
+    ]
+    assert [button.text for button in buttons(harness.last_markup(admin))] == ["Одобрить", "Отклонить"]
+
+
+async def test_non_admin_admin_commands_are_refused(harness, session, make_pair, make_user):
+    man, _ = await make_pair()
+    intruder = await make_user()
+    for command in ("/admin", "/ban №500", "/unban №500"):
+        await harness.text(intruder, command)
+        assert harness.last_text(intruder) == PermissionDenied().message
+    await session.refresh(man)
+    assert not man.is_banned
+
+
+async def test_ban_and_unban_by_profile_number_or_telegram_id(harness, session, make_pair, make_user):
+    man, woman = await make_pair()
+    admin = await make_user(is_admin=True)
+
+    await harness.text(admin, "/ban №500")
+    await session.refresh(man)
+    assert man.is_banned and harness.last_text(admin) == "Пользователь №500 (Анкета №500) заблокирован."
+    await harness.text(admin, "/unban #500")
+    await session.refresh(man)
+    assert not man.is_banned and harness.last_text(admin) == "Пользователь #500 (Анкета №500) разблокирован."
+    await harness.text(admin, f"/ban {woman.telegram_id}")  # the legacy form: a Telegram id
+    await session.refresh(woman)
+    assert woman.is_banned
+
+    await harness.text(admin, "/ban")
+    assert harness.last_text(admin) == "Использование: /ban <Telegram ID или №анкеты>"
+    await harness.text(admin, "/ban Ахмад")
+    assert harness.last_text(admin) == "Укажите Telegram ID (только цифры) или номер анкеты: №512 или #512."
+    await harness.text(admin, "/ban №999")
+    assert harness.last_text(admin) == "Пользователь не найден."
+    other_admin = await make_user(is_admin=True)
+    await harness.text(admin, f"/ban {other_admin.telegram_id}")
+    assert "Администратора нельзя заблокировать" in harness.last_text(admin)

@@ -1,42 +1,59 @@
-# Развёртывание «Истины» на VPS
+# Развёртывание «Никах Истина» на сервере
 
-Пошаговая инструкция для сервера с Ubuntu 22.04 или 24.04, расположенного в России. Всё работает
-в Docker Compose: PostgreSQL, сайт (`web`), Telegram-бот (`bot`) и Caddy (HTTPS).
+Инструкция для сервера с **Ubuntu 24.04**, расположенного в России. Всё работает в Docker Compose:
+PostgreSQL (`db`), сайт (`web`), Telegram-бот (`bot`) и, в одном из режимов, Caddy (HTTPS).
 
-Команды ниже выполняются на новом сервере, если не сказано иначе. Вместо `example.ru` подставьте
-свой домен.
+Сайт можно поставить на тот же сервер, где сейчас работает старый бот @nikah_istina_bot и другие
+боты: Docker не трогает чужие сервисы и занимает только те порты, которые указаны ниже.
+
+**Переход со старого бота** (остановка, перенос данных, запуск нового бота) описан отдельно в
+[CUTOVER.md](CUTOVER.md). Эта инструкция готовит сервер; **бот запускается только по CUTOVER.md**,
+после переноса данных.
+
+В командах ниже замените заглушки своими значениями:
+
+| Заглушка | Что подставить |
+|---|---|
+| `example.ru` | домен сайта |
+| `<IP_сервера>` | публичный IPv4 сервера |
+| `<папка_старого_бота>` | папка, где лежат код старого бота, его `.env` и `data.db` |
+| `<имя_сервиса>` | имя systemd-сервиса старого бота |
+| `<адрес_прокси>`, `<порт_прокси>` | адрес и порт прокси для api.telegram.org |
+
+Реальные адреса, пути, токены и id **не записывайте** в репозиторий, issues и чаты: репозиторий публичный.
 
 ## 0. Что понадобится
 
-- **VPS в России** (152-ФЗ: персональные данные граждан РФ хранятся в РФ, а религиозные убеждения —
-  особая категория данных): Ubuntu 22.04/24.04, от 2 ГБ памяти и 20 ГБ диска, публичный IPv4.
-- **Домен**, в DNS которого можно добавить A-запись.
-- **Токен бота** @nikah_istina_bot: @BotFather → `/mybots` → бот → *API Token*.
-  Это тот же токен, что у текущего бота, поэтому для пользователей бот останется прежним.
-- **Доступ к старому серверу** (`oldvps`), где сейчас работает бот: его нужно будет остановить,
-  а данные — перенести ([LEGACY_IMPORT.md](LEGACY_IMPORT.md)).
+- **Сервер в России** (152-ФЗ: данные граждан РФ хранятся в РФ, а религиозные убеждения — особая
+  категория данных): Ubuntu 24.04, от 2 ГБ памяти и 20 ГБ свободного диска.
+- **Домен** с A-записью на сервер.
+- **`.env` старого бота** (в `<папка_старого_бота>`): токен, id админов, группа свидетелей, прокси.
+- **Доступ root** (или `sudo`) по SSH-ключу.
 
 ## 1. Подготовка сервера
 
 ```bash
-ssh root@IP_СЕРВЕРА
+ssh root@<IP_сервера>
 apt update && apt upgrade -y
-apt install -y git ufw unattended-upgrades
-
-# Открыты только SSH и веб. Порт базы наружу не публикуется (его нет в docker-compose.yml).
-ufw allow OpenSSH
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw allow 443/udp
-ufw enable
+apt install -y git curl sqlite3 unattended-upgrades
 ```
 
-Входите по SSH-ключу, а вход по паролю отключите (`PasswordAuthentication no` в
-`/etc/ssh/sshd_config`, затем `systemctl restart ssh`).
+`sqlite3` нужен для копии базы старого бота при переходе.
+
+**Файрвол.** Сначала посмотрите, что уже настроено: на сервере работают другие сервисы.
+
+```bash
+ufw status verbose
+```
+
+- Если `ufw` **включён** — добавьте только недостающие правила: `ufw allow 80/tcp`, `ufw allow 443/tcp`
+  (и `ufw allow 443/udp` для режима Caddy). SSH и правила других сервисов не трогайте.
+- Если `ufw` **выключен** и сервер защищён иначе (файрвол хостера) — оставьте как есть.
+- Порт PostgreSQL наружу не публикуется ни в одном режиме.
 
 ## 2. Установка Docker
 
-Официальный репозиторий Docker:
+Официальный репозиторий Docker для Ubuntu 24.04 (noble):
 
 ```bash
 apt install -y ca-certificates curl
@@ -54,8 +71,7 @@ docker compose version
 Если `download.docker.com` недоступен с сервера, поставьте Docker из репозитория Ubuntu:
 `apt install -y docker.io docker-compose-v2`, затем проверьте `docker compose version`.
 
-Если не скачиваются образы с Docker Hub (`python`, `postgres`, `caddy`), подключите зеркало и
-перезапустите Docker:
+Если не скачиваются образы с Docker Hub (`python`, `postgres`, `caddy`), подключите зеркало:
 
 ```bash
 cat > /etc/docker/daemon.json <<'EOF'
@@ -67,14 +83,35 @@ systemctl restart docker
 ## 3. Код проекта
 
 ```bash
-mkdir -p /opt/nikah
 git clone https://github.com/ВЛАДЕЛЕЦ/РЕПОЗИТОРИЙ.git /opt/nikah
 cd /opt/nikah
 ```
 
 Дальше все команды `docker compose ...` выполняются в `/opt/nikah`.
 
-## 4. Настройки (.env)
+## 4. Выбор режима: Caddy или nginx
+
+Посмотрите, кто занимает порты 80 и 443:
+
+```bash
+ss -ltnp '( sport = :80 or sport = :443 )'
+```
+
+- **Пусто** → **режим Caddy**: Caddy в контейнере сам получает и продлевает сертификат Let's Encrypt.
+- **Там `nginx`** → **режим nginx**: сайт обслуживает уже установленный nginx, Caddy не запускается,
+  сайт слушает только `127.0.0.1:8000` (раздел 8).
+
+Режим и дополнительные варианты выбираются одной строкой `COMPOSE_FILE` в `.env`, поэтому все
+команды `docker compose ...` дальше одинаковы для любого режима:
+
+| Файл | Зачем |
+|---|---|
+| `docker-compose.yml` | основа: `db`, `web`, `bot`, `caddy` |
+| `docker-compose.nginx.yml` | режим nginx: Caddy выключен, `web` на `127.0.0.1:${WEB_HOST_PORT:-8000}` |
+| `docker-compose.hostproxy.yml` | прокси Telegram слушает `127.0.0.1` хоста: бот в сети хоста (раздел 6) |
+| `docker-compose.hostgateway.yml` | прокси Telegram слушает docker-интерфейс: бот обращается к `host.docker.internal` (раздел 6) |
+
+## 5. Настройки (.env)
 
 ```bash
 cp .env.example .env
@@ -84,130 +121,180 @@ openssl rand -base64 48   # → SECRET_KEY
 nano .env
 ```
 
-Заполните:
-
 | Переменная | Значение |
 |---|---|
+| `COMPOSE_FILE` | режим Caddy — не трогать; режим nginx — `docker-compose.yml:docker-compose.nginx.yml` (+ варианты прокси, раздел 6) |
 | `DOMAIN` | `example.ru` (без `https://`) |
 | `POSTGRES_PASSWORD` | результат `openssl rand -hex 24`; после первого запуска не меняйте |
 | `SECRET_KEY` | результат `openssl rand -base64 48` |
-| `TELEGRAM_TOKEN` | токен @nikah_istina_bot |
-| `ADMIN_TELEGRAM_IDS` | ваш Telegram ID (и других модераторов) через запятую |
+| `TELEGRAM_TOKEN` | токен @nikah_istina_bot (тот же, что у старого бота) |
+| `ADMIN_TELEGRAM_IDS` | Telegram ID админов через запятую |
+| `WITNESS_CHAT_ID` | id группы свидетелей (`-100…`); пусто — копии получает в личку каждый админ |
+| `TELEGRAM_PROXY` | прокси для api.telegram.org (раздел 6); пусто — напрямую |
 
 Остальное можно оставить как есть. `DATABASE_URL` и `SITE_URL` docker compose собирает сам из
-`POSTGRES_PASSWORD` и `DOMAIN`. Файл `.env` содержит секреты: не копируйте его в репозиторий и в чаты.
+`POSTGRES_PASSWORD` и `DOMAIN`.
 
-Проверка: `docker compose config --quiet` ничего не выводит, если всё заполнено. Если нет, он назовёт
-пустую обязательную переменную.
+### Настройки из старого бота
 
-## 5. DNS
-
-У регистратора домена создайте **A-запись** `example.ru → IP_СЕРВЕРА`. Если нужен `www.example.ru`,
-добавьте и его, а в `Caddyfile` замените `{$DOMAIN}` на `{$DOMAIN}, www.{$DOMAIN}`.
-AAAA-запись (IPv6) создавайте, только если IPv6 на сервере действительно настроен: неверная
-AAAA-запись мешает выпуску сертификата.
-
-Проверьте, что запись уже видна (может занять от нескольких минут до суток):
+Посмотрите `.env` старого бота **на сервере** (не копируйте его вывод в чаты):
 
 ```bash
-getent hosts example.ru   # должен показать IP сервера
+cat "<папка_старого_бота>/.env"
 ```
 
-Caddy сам получит сертификат Let's Encrypt при первом запуске и будет его продлевать.
-Для этого порты 80 и 443 должны быть открыты.
+| В старом `.env` | В новом `.env` |
+|---|---|
+| `BOT_TOKEN` | `TELEGRAM_TOKEN` (имя `BOT_TOKEN` тоже принимается) |
+| `ADMIN_IDS` | `ADMIN_TELEGRAM_IDS` (имя `ADMIN_IDS` тоже принимается, формат тот же: `111,222`) |
+| `WITNESS_CHAT_ID` | `WITNESS_CHAT_ID` — как есть |
+| `TELEGRAM_PROXY` | `TELEGRAM_PROXY` — как есть, если прокси на другом сервере; если это `127.0.0.1` этого сервера — раздел 6 |
+| `DB_PATH` | **не переносится**: это путь к `data.db` (по умолчанию `data.db` в `<папка_старого_бота>`). Он нужен только при переносе данных ([CUTOVER.md](CUTOVER.md)) |
 
-## 6. Домен для входа через виджет Telegram
+Если заданы и новое, и старое имя, действует новое; пустое новое значение не скрывает старое.
 
-Вход по кнопке «Войти через Telegram» (ссылка в бота) работает сразу. Чтобы включить ещё и
-виджет Telegram Login:
+Проверка: `docker compose config --quiet` ничего не выводит, если всё заполнено, а иначе называет
+пустую обязательную переменную. `docker compose config --services` показывает сервисы выбранного
+режима (в режиме nginx — без `caddy`).
+
+## 6. Прокси Telegram
+
+С серверов в России api.telegram.org часто недоступен напрямую, поэтому старый бот ходит через
+`TELEGRAM_PROXY`. Поддерживаются `http://` (CONNECT), `socks5://` и `socks4://`, в том числе с логином и
+паролем; `https://` бот отвергнет при запуске. Значение прокси в логи не пишется.
+
+**Где слушает прокси.** Если прокси стоит на этом же сервере, найдите его порт:
+
+```bash
+ss -ltnp | grep <порт_прокси>
+```
+
+| Колонка «Local Address» | Что делать |
+|---|---|
+| `127.0.0.1:<порт_прокси>` (только loopback) | вариант **A**: `TELEGRAM_PROXY=http://127.0.0.1:<порт_прокси>` и `docker-compose.hostproxy.yml` |
+| `172.17.0.1:<порт_прокси>` или `0.0.0.0:<порт_прокси>` / `*:<порт_прокси>` | вариант **B**: `TELEGRAM_PROXY=http://host.docker.internal:<порт_прокси>` и `docker-compose.hostgateway.yml` |
+| прокси на другом сервере | ничего добавлять не нужно: `TELEGRAM_PROXY=http://<адрес_прокси>:<порт_прокси>` |
+
+**Вариант A — бот в сети хоста** (проще всего, если прокси слушает только `127.0.0.1`). Контейнер
+бота использует сеть сервера, поэтому `127.0.0.1` для него — это сам сервер, как у старого бота.
+До базы бот доходит через порт, опубликованный только на `127.0.0.1` (снаружи он недоступен):
+
+```
+COMPOSE_FILE=docker-compose.yml:docker-compose.hostproxy.yml
+# в режиме nginx: COMPOSE_FILE=docker-compose.yml:docker-compose.nginx.yml:docker-compose.hostproxy.yml
+TELEGRAM_PROXY=http://127.0.0.1:<порт_прокси>
+```
+
+Если порт `5432` на `127.0.0.1` уже занят (`ss -ltnp | grep 5432` — например, PostgreSQL другого
+сервиса), задайте другой: `POSTGRES_HOST_PORT=5433`.
+
+**Вариант B — `host.docker.internal`.** Бот остаётся в сети compose и обращается к серверу по
+имени `host.docker.internal` (адрес docker-моста, обычно `172.17.0.1`). Прокси должен слушать этот
+адрес или `0.0.0.0`; во втором случае закройте его порт снаружи (`ufw deny <порт_прокси>/tcp`) и
+разрешите только docker-сетям: `ufw allow from 172.16.0.0/12 to any port <порт_прокси> proto tcp`.
+
+```
+COMPOSE_FILE=docker-compose.yml:docker-compose.hostgateway.yml
+TELEGRAM_PROXY=http://host.docker.internal:<порт_прокси>
+```
+
+**Проверка прокси с сервера** (ответ `302` значит, что Telegram доступен через прокси):
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' -x "http://127.0.0.1:<порт_прокси>" https://api.telegram.org/
+curl -sS -o /dev/null -w '%{http_code}\n' --socks5-hostname 127.0.0.1:<порт_прокси> https://api.telegram.org/   # для socks5
+```
+
+**Проверка из контейнера бота** (для `http://`-прокси; выводит `200`, ничего секретного не печатает):
+
+```bash
+docker compose run --rm --no-deps bot python -c "import os, urllib.request as u; \
+print(u.build_opener(u.ProxyHandler({'https': os.environ['TELEGRAM_PROXY']})).open('https://api.telegram.org/', timeout=15).status)"
+```
+
+После запуска бота (CUTOVER.md) в `docker compose logs bot` должна быть строка
+`connected to Telegram as @nikah_istina_bot`.
+
+## 7. DNS
+
+У регистратора домена создайте **A-запись** `example.ru → <IP_сервера>`. AAAA-запись (IPv6)
+создавайте, только если IPv6 на сервере действительно настроен: неверная AAAA-запись мешает
+выпуску сертификата.
+
+```bash
+getent hosts example.ru   # должен показать IP сервера (иногда ждать до суток)
+```
+
+## 8. HTTPS: режим Caddy или режим nginx
+
+### Режим Caddy (порты 80/443 свободны)
+
+`COMPOSE_FILE` в `.env` не задавайте (или только с вариантом прокси). Caddy запускается вместе с
+сайтом и сам получает сертификат при первом обращении (порты 80 и 443 должны быть открыты). Если
+нужен `www.example.ru`, добавьте для него A-запись, а в `Caddyfile` замените `{$DOMAIN}` на
+`{$DOMAIN}, www.{$DOMAIN}`.
+
+### Режим nginx (порты 80/443 заняты nginx)
+
+1. В `.env`: `COMPOSE_FILE=docker-compose.yml:docker-compose.nginx.yml` (плюс вариант прокси из
+   раздела 6). Если порт 8000 на `127.0.0.1` занят (`ss -ltnp | grep 8000`), задайте
+   `WEB_HOST_PORT=8010` и тот же порт в конфиге nginx.
+2. Конфиг сайта для nginx — [`deploy/nginx/nikah.conf`](../deploy/nginx/nikah.conf). В нём уже
+   настроено всё, что нужно живому чату (Server-Sent Events): `proxy_buffering off`, HTTP/1.1 к
+   приложению, долгий `proxy_read_timeout`, заголовки `X-Forwarded-*`. Замените в нём `example.ru` и
+   подключите:
+
+   ```bash
+   sed 's/example\.ru/ВАШ_ДОМЕН/g' deploy/nginx/nikah.conf > /etc/nginx/sites-available/nikah.conf
+   ln -s /etc/nginx/sites-available/nikah.conf /etc/nginx/sites-enabled/nikah.conf
+   nginx -t && systemctl reload nginx
+   ```
+
+3. Сертификат Let's Encrypt (certbot сам допишет `listen 443 ssl`, сертификат и редирект с http, и
+   будет продлевать его по таймеру):
+
+   ```bash
+   apt install -y certbot python3-certbot-nginx
+   certbot --nginx -d example.ru --redirect
+   systemctl list-timers | grep certbot     # автопродление включено
+   ```
+
+   Если в общем `nginx.conf` в `gzip_types` перечислен `text/event-stream`, уберите его: сжатие
+   буферизует живой чат.
+
+Сайт заработает после запуска `web` (CUTOVER.md, шаг 1). Проверка:
+`curl -fsS https://example.ru/healthz` → `{"status":"ok"}`.
+
+## 9. Вход через виджет Telegram (BotFather `/setdomain`)
+
+Вход по кнопке «Войти через Telegram» (ссылка в бота) работает сразу после запуска нового бота.
+Чтобы включить ещё и виджет Telegram Login:
 
 1. В @BotFather: `/setdomain` → выберите @nikah_istina_bot → отправьте `example.ru`.
 2. В `.env`: `TELEGRAM_WIDGET_ENABLED=true`.
-3. Если стек уже запущен: `docker compose up -d` (контейнеры пересоздадутся с новыми настройками).
+3. `docker compose up -d` (контейнеры пересоздадутся с новыми настройками).
 
-## 7. ВАЖНО: остановить старый бот
+## 10. Первый запуск и переход со старого бота
 
-Telegram отдаёт обновления бота **только одному** процессу. Если новый и старый бот работают с одним
-токеном одновременно, оба получают ошибку `Conflict: terminated by other getUpdates request`, а
-сообщения пользователей теряются или достаются старому боту. Поэтому старый процесс нужно
-остановить **до** запуска нового бота и отключить его автозапуск.
+Дальше — по [CUTOVER.md](CUTOVER.md): поднять базу и сайт **без бота**, пробный перенос, остановка
+старого бота, перенос с `--commit`, запуск нового бота, проверка. Не запускайте `docker compose up -d`
+целиком до переноса: новый бот начнёт работать параллельно со старым (оба получат
+`Conflict: terminated by other getUpdates request`), а созданные им анкеты не дадут выполнить перенос.
 
-**Сначала** снимите схему старой базы и сохраните копию данных ([LEGACY_IMPORT.md](LEGACY_IMPORT.md),
-шаги 1–2). Это можно сделать, пока старый бот ещё работает.
+Бот всегда работает в **одном** экземпляре: не запускайте `--scale bot=2` и второй стек с тем же
+токеном (в том числе локально при разработке).
 
-Найдите, как запущен старый бот (на сервере `oldvps`):
+## 11. Проверка после запуска
 
-```bash
-ps aux | grep -i python                      # процессы Python: путь к скрипту, PID
-systemctl list-units --type=service | grep -i -E 'bot|nikah|python'
-pm2 list                                     # если бот запущен через pm2
-screen -ls                                   # сессии screen
-tmux ls                                      # сессии tmux
-docker ps                                    # если бот в контейнере
-crontab -l; sudo crontab -l                  # строки @reboot могут запускать бот снова
-```
-
-Остановите тем же способом, каким он запущен, и отключите автозапуск:
-
-| Как запущен | Остановить и отключить |
-|---|---|
-| systemd | `sudo systemctl stop ИМЯ && sudo systemctl disable ИМЯ` |
-| pm2 | `pm2 stop ИМЯ && pm2 delete ИМЯ && pm2 save` |
-| screen | `screen -r ИМЯ`, затем Ctrl+C и `exit` |
-| tmux | `tmux attach -t ИМЯ`, затем Ctrl+C и `exit` |
-| docker | `docker update --restart=no КОНТЕЙНЕР && docker stop КОНТЕЙНЕР` |
-| просто процесс | `kill PID` (через 10 секунд, если не завершился: `kill -9 PID`) |
-| cron `@reboot` | удалите строку в `crontab -e` |
-
-Убедитесь, что процесса больше нет: `ps aux | grep -i python`.
-
-Если старый бот работал через **webhook**, а не polling, новый бот при запуске сам удалит webhook
-(накопившиеся сообщения пользователей не теряются). Поэтому старый бот нужно остановить **до** запуска
-нового: иначе он перестанет получать обновления посреди работы. Проверить, установлен ли webhook,
-можно так (подставьте токен; выполните с пробелом в начале строки, чтобы токен не попал в историю
-команд bash):
-
-```bash
- curl -s "https://api.telegram.org/botТОКЕН/getWebhookInfo"    # "url":"" — webhook нет
-```
-
-## 8. Перенос пользователей и анкет
-
-Если маппинг для старой базы уже готов, выполните перенос по [LEGACY_IMPORT.md](LEGACY_IMPORT.md),
-шаги 3–5. Там база поднимается и мигрируется **до** запуска сайта и бота. Без переноса пользователям
-придётся заново заполнить анкеты, поэтому лучше дождаться маппинга.
-
-## 9. Запуск
-
-```bash
-docker compose up -d --build
-docker compose ps
-```
-
-Первая сборка занимает несколько минут. `web` при старте сам применяет миграции (`alembic upgrade head`).
-`bot` запускается после того, как `web` стал healthy, то есть после миграций.
-
-Бот всегда работает в **одном** экземпляре: не запускайте `--scale bot=2` и не запускайте второй
-стек с тем же токеном (в том числе локально при разработке).
-
-## 10. Проверка
-
-- [ ] `docker compose ps`: `db` и `web` — `healthy`, `bot` и `caddy` — `running`.
-- [ ] `curl -fsS https://example.ru/healthz` отвечает `{"status":"ok"}`.
-- [ ] https://example.ru открывается с замком, сертификат выдан на домен.
+- [ ] `docker compose ps`: `db` и `web` — `healthy`, `bot` (и `caddy` в режиме Caddy) — `running`.
+- [ ] `curl -fsS https://example.ru/healthz` отвечает `{"status":"ok"}`; сайт открывается с замком.
 - [ ] `docker compose logs bot --tail 50`: есть `connected to Telegram as @nikah_istina_bot`,
       нет `Conflict` и `Unauthorized`.
-- [ ] С другого компьютера порт базы закрыт: `nc -zv IP_СЕРВЕРА 5432` не подключается.
-- [ ] В Telegram: `/start` в боте, создайте тестовую анкету. Она пришла админам в бот и видна в
-      https://example.ru/admin/moderation. Одобрите её — автору пришло уведомление.
-- [ ] Вход на сайт: «Войти через Telegram» → подтверждение в боте → вкладка авторизовалась.
-- [ ] Синхронизация: отправьте отклик на сайте, примите его в боте, напишите сообщение в боте —
-      оно сразу появляется в открытом чате на сайте. Ответ с сайта приходит в бот.
-- [ ] Вали: в настройках сайта создайте ссылку, откройте её другим аккаунтом Telegram, подтвердите —
-      копии переписки приходят вали.
-- [ ] Удалите тестовые аккаунты: `/delete` в боте.
+- [ ] С другого компьютера порты базы и сайта закрыты: `nc -zv <IP_сервера> 5432` и
+      `nc -zv <IP_сервера> 8000` не подключаются.
+- [ ] Остальное — чек-лист в [CUTOVER.md](CUTOVER.md), шаг 7.
 
-## 11. Администраторы
+## 12. Администраторы
 
 Права админа есть у всех из `ADMIN_TELEGRAM_IDS`. Выдать их ещё кому-то без перезапуска (человек
 должен сначала нажать `/start` в боте):
@@ -217,10 +304,12 @@ docker compose exec web python -m scripts.make_admin 123456789
 docker compose exec web python -m scripts.make_admin 123456789 --revoke   # снять права
 ```
 
-Админка: https://example.ru/admin — сводка, модерация анкет, жалобы, стоп-слова, поиск пользователей
-и блокировка. Новые анкеты и жалобы также приходят админам в бот с кнопками.
+Админка: https://example.ru/admin — сводка (в том числе итоги переноса из старого бота), модерация
+анкет, жалобы, помеченные сообщения (фильтр контактов, стоп-слова, свидетель, жалобы), сообщения
+свидетеля, чаты, поиск людей по номеру анкеты (`№512` или `#512`), Telegram ID или @username.
+В боте админам по-прежнему доступны `/admin`, `/ban` и `/unban`.
 
-## 12. Обновление
+## 13. Обновление
 
 ```bash
 cd /opt/nikah
@@ -231,17 +320,22 @@ docker compose ps
 docker image prune -f               # удалить старые образы
 ```
 
-## 13. Логи
+Если в обновлении менялись `deploy/nginx/nikah.conf` или файлы `docker-compose.*.yml`, сравните
+их со своими копиями (`diff deploy/nginx/nikah.conf /etc/nginx/sites-available/nikah.conf`).
+
+## 14. Логи
 
 ```bash
 docker compose logs -f web bot          # в реальном времени
 docker compose logs --since 1h bot      # за последний час
-docker compose logs caddy               # сертификаты, HTTPS
+docker compose logs caddy               # режим Caddy: сертификаты, HTTPS
+tail -f /var/log/nginx/nikah.error.log  # режим nginx
 ```
 
-Логи каждого контейнера ограничены 5 файлами по 10 МБ (см. `x-logging` в `docker-compose.yml`).
+Логи контейнеров ограничены 5 файлами по 10 МБ на контейнер (`x-logging` в `docker-compose.yml`).
+Тексты сообщений, анкеты и значение прокси в логи не пишутся.
 
-## 14. Резервные копии
+## 15. Резервные копии
 
 `scripts/backup.sh` делает `pg_dump` базы, сжимает его и кладёт в `backups/nikah-ДАТА-ВРЕМЯ.sql.gz`.
 Хранятся 14 последних копий. Файлы доступны только владельцу: в них персональные данные.
@@ -258,7 +352,7 @@ BACKUP_DIR=/var/backups/nikah KEEP=30 ./scripts/backup.sh    # другая па
 ```
 
 Копии на том же сервере не спасут при потере диска. Регулярно переносите их в другое хранилище,
-**тоже расположенное в России** (152-ФЗ), и лучше в зашифрованном виде, например
+**тоже расположенное в России** (152-ФЗ), лучше в зашифрованном виде, например
 `gpg --symmetric --cipher-algo AES256 ФАЙЛ`.
 
 ### Восстановление
@@ -284,38 +378,36 @@ docker compose exec db psql -U nikah -d nikah_restore_check -c "SELECT count(*) 
 docker compose exec db dropdb -U nikah nikah_restore_check
 ```
 
-## 15. Откат
-
-**Новая версия кода работает плохо.** Верните предыдущий коммит:
+## 16. Откат версии кода
 
 ```bash
-git log --oneline -5                       # найдите предыдущий коммит
-docker compose run --rm web alembic history | head   # были ли новые миграции
+git log --oneline -5                                    # найдите предыдущий коммит
+docker compose run --rm --no-deps web alembic history | head   # были ли новые миграции
 ```
 
-- Если новых миграций не было: `git checkout ПРЕДЫДУЩИЙ_КОММИТ && docker compose up -d --build`.
-- Если были, сначала откатите схему **кодом новой версии**, а потом переключите код:
-  `docker compose run --rm web alembic downgrade РЕВИЗИЯ_ПРЕДЫДУЩЕЙ_ВЕРСИИ`, затем
-  `git checkout ...` и `docker compose up -d --build`.
-- Самый надёжный путь — восстановить копию, сделанную перед обновлением (раздел 14). Изменения,
-  сделанные после неё, пропадут.
+- Новых миграций не было: `git checkout ПРЕДЫДУЩИЙ_КОММИТ && docker compose up -d --build`.
+- Были: сначала откатите схему **кодом новой версии**
+  (`docker compose run --rm web alembic downgrade РЕВИЗИЯ_ПРЕДЫДУЩЕЙ_ВЕРСИИ`), затем `git checkout ...`
+  и `docker compose up -d --build`.
+- Самый надёжный путь — восстановить копию, сделанную перед обновлением (раздел 15).
 
 Вернуться на ветку: `git checkout main && git pull && docker compose up -d --build`.
 
-**Нужно срочно вернуть старый бот.** Остановите новый (`docker compose stop bot`) и запустите
-старый процесс на `oldvps`. Учтите: анкеты и переписка, созданные в новой системе, в старом боте
-не появятся.
+Возврат к **старому боту** — в [CUTOVER.md](CUTOVER.md), раздел «Откат».
 
-## 16. Частые проблемы
+## 17. Частые проблемы
 
 | Симптом | Причина и решение |
 |---|---|
-| В логах бота `Conflict: terminated by other getUpdates request` | Работает второй процесс с тем же токеном: старый бот или локальный запуск. Шаг 7. |
-| `Conflict: can't use getUpdates method while webhook is active` | Webhook снова установил другой процесс с тем же токеном (старый бот). Остановите его (шаг 7) и перезапустите бота: `docker compose restart bot`. |
-| `web` не стартует: `SECRET_KEY must be set...` | Не заполнен `SECRET_KEY` в `.env` (шаг 4). `docker-compose.yml` всегда запускает приложение с `ENV=prod`, даже если строки `ENV` в `.env` нет. |
-| `the development SECRET_KEY cannot be used for an https:// SITE_URL` | Приложение запущено без `ENV=prod` и без `SECRET_KEY` (например, не через `docker compose`). Задайте оба значения. |
+| В логах бота `Conflict: terminated by other getUpdates request` | Работает второй процесс с тем же токеном — обычно старый бот. `systemctl stop <имя_сервиса> && systemctl disable <имя_сервиса>` (CUTOVER.md, шаг 3). |
+| `Conflict: can't use getUpdates method while webhook is active` | Webhook установил другой процесс с тем же токеном. Остановите его и `docker compose restart bot`. |
+| Бот не подключается: `TelegramNetworkError`, таймауты | Telegram недоступен без прокси или прокси недоступен из контейнера: раздел 6 (`ss -ltnp`, проверка `curl` и из контейнера). |
+| Бот не стартует: `TELEGRAM_PROXY: use http://host:port or socks5://host:port …` | `https://`-прокси не поддерживается: укажите `http://` или `socks5://`. |
+| `web` не стартует: `SECRET_KEY must be set...` | Не заполнен `SECRET_KEY` (раздел 5). `docker-compose.yml` всегда запускает приложение с `ENV=prod`. |
 | `required variable ... is missing a value` | Не заполнены `DOMAIN` или `POSTGRES_PASSWORD` в `.env`. |
-| Нет HTTPS, в логах Caddy ошибки ACME | DNS ещё не указывает на сервер или закрыты порты 80/443 (шаги 1, 5). |
-| 502 Bad Gateway | `web` не запустился: `docker compose logs web`. |
+| `bind: address already in use` для `127.0.0.1:8000` или `127.0.0.1:5432` | Порт занят другим сервисом: `WEB_HOST_PORT` / `POSTGRES_HOST_PORT` в `.env` (и порт в конфиге nginx). |
+| Режим Caddy: нет HTTPS, в логах Caddy ошибки ACME | DNS ещё не указывает на сервер или закрыты порты 80/443 (разделы 1, 7). |
+| Режим Caddy: `bind: address already in use` для `:80` | Порты заняты nginx: нужен режим nginx (разделы 4, 8). |
+| 502 Bad Gateway | `web` не запустился (`docker compose logs web`) или nginx смотрит не на тот порт (`WEB_HOST_PORT`). |
 | `password authentication failed` после смены `POSTGRES_PASSWORD` | Пароль задаётся только при создании базы. Верните старый или смените его в базе: `docker compose exec db psql -U nikah -c "ALTER ROLE nikah PASSWORD '...'"`. |
-| Живой чат не обновляется | Проверьте, что в `Caddyfile` осталось `flush_interval -1` и сжатие не включено для `text/event-stream`. |
+| Живой чат не обновляется | Caddy: в `Caddyfile` должно остаться `flush_interval -1`. nginx: `proxy_buffering off` и `proxy_http_version 1.1` из `deploy/nginx/nikah.conf`, `text/event-stream` не в `gzip_types`. |

@@ -1,0 +1,28 @@
+{# Rows: list of ChatRow (conversation, messages, flagged). Needs ``am`` (admin macros). #}
+<div class="adm-scroll">
+<table class="adm-table adm-table--list">
+  <thead>
+    <tr>
+      <th scope="col">Чат</th>
+      <th scope="col">Участники</th>
+      <th scope="col">Открыт</th>
+      <th scope="col">Последнее сообщение</th>
+      <th scope="col" class="num">Сообщений</th>
+      <th scope="col">Статус</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    {% set conversation = row.conversation %}
+    <tr>
+      <td>{{ am.chat_link(conversation.id) }}</td>
+      <td>{{ am.person(conversation.user_a) }} ↔ {{ am.person(conversation.user_b) }}</td>
+      <td>{{ conversation.created_at|msk }}</td>
+      <td>{{ conversation.last_message_at|msk if conversation.last_message_at else '—' }}</td>
+      <td class="num">{{ row.messages }}{% if row.flagged %} <span class="adm-tag adm-tag--warn" title="помеченных">{{ row.flagged }}</span>{% endif %}</td>
+      <td>{% if conversation.is_open %}<span class="adm-tag adm-tag--active">открыт</span>{% else %}закрыт {{ conversation.closed_at|msk }}<br><span class="adm-muted">{{ label(conversation.close_reason) if conversation.close_reason else '' }}</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>

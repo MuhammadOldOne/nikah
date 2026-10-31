@@ -1,0 +1,16 @@
+{% extends "admin/base.html" %}
+{% block title %}Чаты{% endblock %}
+{% block content %}
+<h1>Чаты <span class="adm-muted">{{ pager.total }}</span></h1>
+<nav class="adm-tabs" aria-label="Какие чаты показать">
+  <a href="/admin/chats?status=open"{% if status.value == 'open' %} aria-current="page"{% endif %}>Открытые</a>
+  <a href="/admin/chats?status=closed"{% if status.value == 'closed' %} aria-current="page"{% endif %}>Закрытые</a>
+</nav>
+<p class="adm-hint">Вы — свидетель каждой переписки: копии сообщений приходят в группу свидетелей (или админам в личку). Здесь та же переписка целиком. Сначала чаты с самыми свежими сообщениями.</p>
+{% if rows %}
+{% include "admin/_chats_table.html" %}
+{% else %}
+<p class="adm-empty">{% if status.value == 'open' %}Открытых чатов нет.{% else %}Закрытых чатов пока нет.{% endif %}</p>
+{% endif %}
+{{ am.pager(pager) }}
+{% endblock %}

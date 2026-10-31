@@ -25,7 +25,6 @@ CONSENT_FIELDS: dict[str, str] = {
 # Wizard step of every field: 1 «Основное», 2 «Семья и жизнь», 3 «Пожелания».
 FIELD_STEPS: dict[str, int] = {
     "gender": 1,
-    "name": 1,
     "birth_year": 1,
     "city": 1,
     "nationality": 1,

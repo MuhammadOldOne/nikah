@@ -1,4 +1,4 @@
-"""Operations scripts: make_admin and the legacy database inspector/importer."""
+"""Operations scripts: make_admin and the legacy database inspector (the import: tests/import)."""
 
 from __future__ import annotations
 
@@ -6,16 +6,13 @@ import hashlib
 import sqlite3
 import subprocess
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
 
-from app.enums import ProfileStatus
-from app.models import Profile, User
+from app.models import User
 from scripts import import_legacy
-from scripts.import_legacy import LegacyRecord, import_records, inspect
+from scripts.import_legacy import inspect
 from scripts.make_admin import CommandError, set_admin
 from tests.conftest import TEST_DATABASE_URL
 
@@ -130,58 +127,6 @@ def test_inspect_rejects_other_files(tmp_path: Path, capsys):
     assert import_legacy.main(["--inspect", str(tmp_path / "missing.db")]) == 1
 
 
-def test_import_mapping_is_not_written_yet(legacy_sqlite: Path, capsys):
-    assert import_legacy.main(["--import", str(legacy_sqlite)]) == 2
-    assert "Заполните маппинг после --inspect" in capsys.readouterr().err
-
-
 def test_commit_only_with_import(legacy_sqlite: Path):
     with pytest.raises(SystemExit):
         import_legacy.main(["--inspect", str(legacy_sqlite), "--commit"])
-
-
-# --- import_legacy write path (used once the MAPPING is filled in) --------------------------------
-
-
-def _profile(**overrides) -> dict:
-    data = {
-        "gender": "female",
-        "name": "Марьям",
-        "birth_year": 1995,
-        "city": "Казань",
-        "marital_status": "never_married",
-        "children": 0,
-        "education": "higher",
-        "employment": "employed",
-        "wishes": "Ищу верующего мужа для создания семьи.",
-    }
-    return {**data, **overrides}
-
-
-async def test_import_records(session, make_user):
-    existing = await make_user(telegram_id=1001, first_name="Уже здесь")
-    consent = datetime(2025, 1, 1, tzinfo=UTC)
-    records = [
-        LegacyRecord(telegram_id=1001, first_name="Перезапись", consent_at=consent, profile=_profile()),
-        LegacyRecord(telegram_id=1002, username="maryam", first_name="Марьям", consent_at=consent, profile=_profile()),
-        LegacyRecord(telegram_id=1003, consent_at=None, profile=_profile()),
-        LegacyRecord(telegram_id=1004, consent_at=consent, profile=_profile(about="пишите @zarema_secret")),
-        LegacyRecord(telegram_id=1005, consent_at=consent, profile=_profile(about="Помогу с инвестициями")),
-    ]
-    report = await import_records(session, records)
-    await session.commit()
-
-    assert (report.users_created, report.users_existing, report.skipped_no_consent) == (3, 1, 1)
-    assert report.profiles_created == 2 and dict(report.profiles_invalid) == {"about": 1}
-    text = report.format(committed=True)
-    assert "Анкет перенесено: 2" in text and "about: 1" in text
-    _assert_no_secrets(text)
-
-    assert (await _fresh(session, existing.id)).first_name == "Уже здесь"
-    imported = {user.telegram_id: user for user in await session.scalars(select(User).where(User.telegram_id > 1001))}
-    assert set(imported) == {1002, 1004, 1005}
-    assert imported[1002].consent_at == consent and imported[1002].username == "maryam"
-    profiles = {p.user_id: p for p in await session.scalars(select(Profile))}
-    assert set(profiles) == {imported[1002].id, imported[1005].id}
-    assert all(p.status == ProfileStatus.PENDING and p.submitted_at for p in profiles.values())
-    assert profiles[imported[1005].id].flagged and not profiles[imported[1002].id].flagged

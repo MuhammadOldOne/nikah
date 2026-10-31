@@ -1,5 +1,5 @@
 """Bot middlewares: one DB unit of work per update (committed before every Telegram call), the
-current account, admin-only routers."""
+current account, admin-only routers. The consent gate lives in handlers.consent."""
 
 from __future__ import annotations
 
@@ -20,9 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot import texts
 from app.bot.callbacks import AccountCb
+from app.config import get_settings
 from app.db import session_scope
+from app.models import User
 from app.services import users
-from app.services.errors import PermissionDenied
+from app.services.errors import PermissionDenied, WitnessOnly
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -94,17 +96,38 @@ class CommitBeforeTelegram(BaseRequestMiddleware):
             return True  # type: ignore[return-value]  # the result of answerCallbackQuery
 
 
+async def _witness_chat_member(session: AsyncSession, sender: TelegramUser) -> User | None:
+    """The account of someone acting in the witness group. Accounts are created only for the
+    admins of ADMIN_TELEGRAM_IDS (who may never have opened the bot privately), never for other
+    members of the group."""
+    user = await users.get_by_telegram_id(session, sender.id)
+    if user is None and sender.id in get_settings().ADMIN_TELEGRAM_IDS:
+        user = await users.get_or_create_by_telegram(session, sender.id, sender.username, sender.first_name)
+    return user
+
+
 class UserMiddleware(BaseMiddleware):
-    """Outer message/callback middleware: private chats only; upserts the account by Telegram id
-    (handlers receive it as ``user``, with ``profile`` loaded) and stops banned users, who may
-    only delete their account."""
+    """Outer message/callback middleware: private chats, plus the witness group (WITNESS_CHAT_ID)
+    where only the witness handlers run; upserts the account by Telegram id (handlers receive it
+    as ``user``, with ``profile`` loaded) and stops banned users, who may only delete their account."""
 
     async def __call__(self, handler: Handler, event: TelegramObject, data: dict[str, Any]) -> Any:
         chat: Chat | None = data.get("event_chat")
         sender: TelegramUser | None = data.get("event_from_user")
-        if chat is None or chat.type != ChatType.PRIVATE or sender is None or sender.is_bot:
-            return None  # the bot works only in private chats: never post profiles into groups
+        if chat is None or sender is None or sender.is_bot:
+            return None
         session = data["session"]
+        if chat.type != ChatType.PRIVATE:
+            # Never post profiles into groups: only the witness buttons and the witness's text work there.
+            if chat.id != get_settings().WITNESS_CHAT_ID:
+                return None
+            member = await _witness_chat_member(session, sender)
+            if member is None:
+                if isinstance(event, CallbackQuery):
+                    await event.answer(WitnessOnly().message, show_alert=True)
+                return None
+            data["user"] = member
+            return await handler(event, data)
         user = await users.get_or_create_by_telegram(session, sender.id, sender.username, sender.first_name)
         await users.touch_last_seen(session, user)
         if user.is_banned and not _is_account_deletion(event):

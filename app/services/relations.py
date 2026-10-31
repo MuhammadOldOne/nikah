@@ -6,7 +6,7 @@ from sqlalchemy import ColumnElement, and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import QueryableAttribute
 
-from app.models import Conversation, Report
+from app.models import Conversation, Report, User
 
 
 def report_between(user_id: int, other_id: int | ColumnElement[int] | QueryableAttribute[int]) -> ColumnElement[bool]:
@@ -31,3 +31,12 @@ async def open_conversation_partner_ids(session: AsyncSession, user_id: int) -> 
         )
     )
     return sorted({other for pair in rows.all() for other in pair if other is not None and other != user_id})
+
+
+async def lock_users(session: AsyncSession, *user_ids: int) -> None:
+    """Lock users rows (FOR NO KEY UPDATE) one by one in ascending id order, so two transactions
+    that lock the same pair cannot deadlock each other. Serializes the pair rules of
+    interests.send_interest / accept (one pending interest, MAX_OPEN_CONVERSATIONS) and the
+    sender's daily limit; NO KEY UPDATE does not block FK checks of inserts referencing the users."""
+    for user_id in sorted(set(user_ids)):
+        await session.execute(select(User.id).where(User.id == user_id).with_for_update(key_share=True))

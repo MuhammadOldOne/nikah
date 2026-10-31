@@ -1,11 +1,17 @@
-"""«🔍 Смотреть анкеты»: one card at a time, age/city filter, interest with an optional message."""
+"""«Смотреть анкеты»: the legacy browsing card (⬅️ N/M ➡️, «Написать (заинтересоваться)»,
+«Закрыть»), an interest with an optional message, reports and an age/city filter.
+
+Navigation buttons carry the card's profile number and position, so they keep working after a
+restart; the position is re-computed from the current catalog (profiles come and go)."""
 
 from __future__ import annotations
 
+import contextlib
 import re
 from typing import Any
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from pydantic import ValidationError
@@ -17,17 +23,14 @@ from app.bot.handlers import report
 from app.bot.render import esc
 from app.bot.states import CatalogForm
 from app.bot.ui import edit, exit_flow, send, set_buttons
-from app.enums import ProfileStatus
-from app.models import User
+from app.models import Profile, User
 from app.schemas import CatalogFilters, first_error
 from app.services import guardians, interests, profiles
-from app.services.errors import DomainError, InvalidInput, ProfileNotActive, ProfileRequired
+from app.services.errors import DomainError, InvalidInput, ProfileNotFound, ProfilePending, ProfileRequired
 
-PAGE_KEY = "catalog_page"
-SHOWN_KEY = "catalog_shown"  # user id of the card shown last: «Дальше» continues after it
 FILTERS_KEY = "catalog_filters"
 FILTER_DRAFT_KEY = "filter_draft"
-INTEREST_KEY = "interest_to"
+INTEREST_KEY = "interest_to"  # profile number the interest goes to
 _NUMBER = re.compile(r"\d+")
 
 
@@ -49,15 +52,26 @@ def _filter_note(filters: CatalogFilters) -> str:
 
 
 async def show_catalog(
-    event: Message | CallbackQuery, state: FSMContext, session: AsyncSession, user: User, *, replace: bool = False
+    event: Message | CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    user: User,
+    *,
+    page: int = 1,
+    replace: bool = False,
 ) -> None:
-    data = await state.get_data()
-    page = int(data.get(PAGE_KEY) or 1)
-    filters = _filters(data)
+    """One card at page ``page`` (1-based); ``replace``: edit the callback's card in place."""
+    filters = _filters(await state.get_data())
     try:
-        items, total = await profiles.list_catalog(session, user, filters, page=page, per_page=1)
+        items, total = await profiles.list_catalog(session, user, filters, page=max(page, 1), per_page=1)
+        if not items and total:  # the list got shorter since the button was shown
+            page = total
+            items, total = await profiles.list_catalog(session, user, filters, page=page, per_page=1)
     except ProfileRequired:
         await send(event, texts.PROFILE_REQUIRED, keyboards.create_profile())
+        return
+    except ProfilePending:
+        await send(event, texts.NOT_APPROVED)
         return
     except DomainError as exc:
         await send(event, esc(exc.message))
@@ -66,51 +80,46 @@ async def show_catalog(
     if items:
         profile = items[0]
         has_guardian = await guardians.has_active_guardian(session, profile.user_id)
-        footer = f"Анкета {page} из {total}" + (f" · фильтр: {note}" if note else "")
-        text = f"{render.profile_card(profile, has_guardian=has_guardian)}\n\n<i>{footer}</i>"
-        if user.profile is not None and user.profile.status != ProfileStatus.ACTIVE:
-            text += f"\n\nℹ️ {ProfileNotActive().message}"
-        markup = keyboards.catalog_card(profile.user_id)
-        await state.update_data({SHOWN_KEY: profile.user_id})
+        text = render.profile_card(profile, has_guardian=has_guardian)
+        if note:
+            text += f"\n\n<i>Фильтр: {note}</i>"
+        markup = keyboards.browse(max(page, 1), total, profile.number, has_filter=bool(note))
     else:
-        if total:
-            text = "Вы посмотрели все анкеты 🌙 Новые появляются регулярно — загляните позже или начните сначала."
-        else:
-            text = f"По фильтру «{note}» анкет пока нет." if note else "Анкет пока нет — загляните позже."
-        markup = keyboards.catalog_end(has_filter=bool(note))
+        text = f"По фильтру «{note}» анкет пока нет." if note else texts.CATALOG_EMPTY
+        markup = keyboards.browse_end(has_filter=True) if note else None
     if replace and isinstance(event, CallbackQuery):
         await edit(event, text, markup)
     else:
         await send(event, text, markup)
 
 
-async def _next_page(state: FSMContext, session: AsyncSession, user: User) -> int:
-    """The page after the card shown last, wherever it is now. Profiles may have left the list
-    meanwhile (one the user just reported, a hidden one): counting pages would skip a card."""
-    data = await state.get_data()
-    page = int(data.get(PAGE_KEY) or 1)
-    shown = data.get(SHOWN_KEY)
-    if shown is None:
-        return page + 1
+async def _target_page(state: FSMContext, session: AsyncSession, user: User, callback_data: CatalogCb) -> int:
+    """The page ⬅️/➡️ leads to, from where the shown card is now. If it left the catalog
+    (reported, hidden…), the next card has moved up to the shown card's page."""
+    position = None
+    shown = await profiles.get_profile_by_number(session, callback_data.number) if callback_data.number else None
+    if shown is not None:
+        with contextlib.suppress(DomainError):  # the gate is reported by show_catalog
+            filters = _filters(await state.get_data())
+            position = await profiles.catalog_position(session, user, filters, shown.user_id)
+    if callback_data.action == CatalogAction.NEXT:
+        return position + 1 if position is not None else callback_data.page
+    return position - 1 if position is not None else callback_data.page - 1
+
+
+async def start_interest(callback: CallbackQuery, state: FSMContext, user: User, number: int) -> None:
+    """«Написать (заинтересоваться)»: ask for an optional message (send_interest re-checks every rule)."""
     try:
-        position = await profiles.catalog_position(session, user, _filters(data), shown)
-    except DomainError:
-        return page + 1
-    # Not in the list any more: the next card has moved up to the shown card's page.
-    return position + 1 if position is not None else page
-
-
-async def _ask_interest_message(callback: CallbackQuery, state: FSMContext, user: User, target_id: int) -> None:
-    # Fail fast before asking for a message; send_interest re-checks every rule.
-    if user.profile is None:
-        await callback.answer(texts.PROFILE_REQUIRED, show_alert=True)
+        profiles.require_active(user.profile)  # fail fast, before asking for a message
+    except ProfilePending:
+        await callback.answer(texts.NOT_APPROVED, show_alert=True)
         return
-    if user.profile.status != ProfileStatus.ACTIVE:
-        await callback.answer(ProfileNotActive().message, show_alert=True)
+    except DomainError as exc:
+        await callback.answer(exc.message, show_alert=True)
         return
     await exit_flow(state)
     await state.set_state(CatalogForm.interest_message)
-    await state.update_data({INTEREST_KEY: target_id})
+    await state.update_data({INTEREST_KEY: number})
     await callback.answer()
     await send(callback, texts.INTEREST_MESSAGE_PROMPT, keyboards.interest_message())
 
@@ -118,13 +127,14 @@ async def _ask_interest_message(callback: CallbackQuery, state: FSMContext, user
 async def _send_interest(
     event: Message | CallbackQuery, state: FSMContext, session: AsyncSession, user: User, text: str | None
 ) -> None:
-    target_id = (await state.get_data()).get(INTEREST_KEY)
-    if target_id is None:
+    number = (await state.get_data()).get(INTEREST_KEY)
+    target: Profile | None = await profiles.get_profile_by_number(session, number) if number else None
+    if target is None:
         await exit_flow(state)
-        await send(event, texts.STALE_BUTTON)
+        await send(event, esc(ProfileNotFound().message) if number else texts.STALE_BUTTON)
         return
     try:
-        await interests.send_interest(session, user, target_id, text)
+        await interests.send_interest(session, user, target.user_id, text)
     except InvalidInput as exc:
         await send(
             event,
@@ -137,9 +147,7 @@ async def _send_interest(
         await send(event, esc(exc.message))
         return
     await exit_flow(state)
-    target = await profiles.get_profile(session, target_id)
-    name = render.profile_ref(target) if target else "собеседник"
-    await send(event, f"💌 Отклик отправлен. Если {name} примет его, откроется чат — уведомление придёт сюда.")
+    await send(event, f"Ваш отклик анкете №{target.number} отправлен. Когда поступит ответ, бот сообщит.")
 
 
 async def on_interest_message(message: Message, state: FSMContext, session: AsyncSession, user: User) -> None:
@@ -183,7 +191,7 @@ async def _apply_filter(
         await send(event, f"⚠️ {esc(first_error(exc))}", keyboards.filter_city())
         return
     await exit_flow(state)
-    await state.update_data({FILTERS_KEY: filters.model_dump(mode="json", exclude_none=True), PAGE_KEY: 1})
+    await state.update_data({FILTERS_KEY: filters.model_dump(mode="json", exclude_none=True)})
     await show_catalog(event, state, session, user)
 
 
@@ -191,54 +199,64 @@ async def on_filter_city(message: Message, state: FSMContext, session: AsyncSess
     await _apply_filter(message, state, session, user, message.text)
 
 
+async def close_card(callback: CallbackQuery) -> None:
+    """Legacy «Закрыть»: delete the card (or at least its buttons)."""
+    if isinstance(callback.message, Message):
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            await set_buttons(callback, None)
+
+
 async def on_catalog_action(
     callback: CallbackQuery, callback_data: CatalogCb, state: FSMContext, session: AsyncSession, user: User
 ) -> None:
     action = callback_data.action
     current_state = await state.get_state()
-    if action in (CatalogAction.INTEREST, CatalogAction.REPORT) and callback_data.user_id <= 0:
+    if action in (CatalogAction.INTEREST, CatalogAction.REPORT) and callback_data.number <= 0:
         await callback.answer(texts.STALE_BUTTON)
         return
     match action:
         case CatalogAction.INTEREST:
-            await _ask_interest_message(callback, state, user, callback_data.user_id)
-            return
+            await start_interest(callback, state, user, callback_data.number)
         case CatalogAction.NO_MESSAGE if current_state == CatalogForm.interest_message.state:
             await callback.answer()
             await set_buttons(callback, None)
             await _send_interest(callback, state, session, user, None)
-            return
         case CatalogAction.REPORT:
             await callback.answer()
-            await report.ask_reason(callback, callback_data.user_id)
-            return
+            await report.ask_reason(callback, callback_data.number)
         case CatalogAction.FILTER:
             await callback.answer()
             await exit_flow(state)
             await state.set_state(CatalogForm.age)
             await send(callback, texts.FILTER_AGE_PROMPT, keyboards.filter_age())
-            return
         case CatalogAction.ANY_AGE if current_state == CatalogForm.age.state:
             await callback.answer()
             await set_buttons(callback, None)
             await _ask_city(callback, state, {})
-            return
         case CatalogAction.ANY_CITY if current_state == CatalogForm.city.state:
             await callback.answer()
             await set_buttons(callback, None)
             await _apply_filter(callback, state, session, user, None)
-            return
-        case CatalogAction.NEXT:
-            await state.update_data({PAGE_KEY: await _next_page(state, session, user)})
+        case CatalogAction.PREV | CatalogAction.NEXT:
+            await callback.answer()
+            page = await _target_page(state, session, user, callback_data)
+            await show_catalog(callback, state, session, user, page=page, replace=True)
         case CatalogAction.RESTART:
-            await state.update_data({PAGE_KEY: 1})
+            await callback.answer()
+            await show_catalog(callback, state, session, user, replace=True)
         case CatalogAction.RESET_FILTER:
-            await state.update_data({PAGE_KEY: 1, FILTERS_KEY: {}})
+            await callback.answer()
+            await state.update_data({FILTERS_KEY: {}})
+            await show_catalog(callback, state, session, user, replace=True)
+        case CatalogAction.NOOP:
+            await callback.answer()
+        case CatalogAction.CLOSE:
+            await callback.answer()
+            await close_card(callback)
         case _:
             await callback.answer(texts.STALE_BUTTON)
-            return
-    await callback.answer()
-    await show_catalog(callback, state, session, user, replace=True)
 
 
 def create_router() -> Router:

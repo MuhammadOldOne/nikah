@@ -36,12 +36,19 @@
   "link": '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
 } %}
 
+{# Lowercase field names for sentences («Не хватает: семейное положение, дети»). #}
+{% set FIELD_NAMES = {
+  "birth_year": "год рождения", "city": "город", "marital_status": "семейное положение", "children": "дети",
+  "education": "образование", "employment": "занятость", "wishes": "пожелания к супругу",
+} %}
+
 {% macro icon(name, cls="") -%}
 <svg class="icon {{ cls }}" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{{ ICONS[name]|safe }}</svg>
 {%- endmacro %}
 
-{% macro brand_mark(cls="brand__mark") -%}
-<svg class="{{ cls }}" viewBox="0 0 32 32" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="8" y="8" width="16" height="16" rx="1.5"/><rect x="8" y="8" width="16" height="16" rx="1.5" transform="rotate(45 16 16)"/><circle class="brand__dot" cx="16" cy="16" r="2.6" stroke="none"/></svg>
+{# The «Никах Истина» emblem (decorative next to the site name, which screen readers get as text). #}
+{% macro logo(cls, size, alt="") -%}
+<img class="{{ cls }}" src="{{ static_url('img/logo.png') }}" srcset="{{ static_url('img/logo.png') }} 1x, {{ static_url('img/logo@2x.png') }} 2x" width="{{ size }}" height="{{ size }}" alt="{{ alt }}">
 {%- endmacro %}
 
 {% macro avatar(gender, size="") -%}
@@ -87,6 +94,14 @@
 </fieldset>
 {%- endmacro %}
 
+{# «не указано» for a required field left empty in a profile migrated from the legacy bot. #}
+{% macro or_unknown(text) -%}{% if text %}{{ text }}{% else %}<span class="unknown">не указано</span>{% endif %}{%- endmacro %}
+
+{# «Анкета №512 — Сестра, 25 лет»: how people are known (no names). #}
+{% macro profile_heading(profile) -%}
+{{ profile_title(profile) }} — {{ gender_word(profile.gender) }}, {{ profile.birth_year|age }}&nbsp;{{ plural(profile.birth_year|age, 'год', 'года', 'лет') }}
+{%- endmacro %}
+
 {# A profile card for the catalog. ``wali_ids`` is the set of user ids with an active guardian. #}
 {% macro profile_card(profile, wali_ids) -%}
 {% set g = profile.gender %}
@@ -94,20 +109,42 @@
   <div class="pcard__head">
     {{ avatar(g) }}
     <div>
-      <h3 class="pcard__title"><a href="/u/{{ profile.user_id }}">{{ profile.name }}, {{ profile.birth_year|age }}&nbsp;{{ plural(profile.birth_year|age, 'год', 'года', 'лет') }}</a></h3>
+      <h3 class="pcard__title"><a href="/p/{{ profile.number }}">{{ profile_heading(profile) }}</a></h3>
       <div class="pcard__sub">{{ icon('pin', 'icon--sm') }}{{ profile.city }}</div>
     </div>
   </div>
   <ul class="pcard__facts" aria-label="Коротко">
-    <li>{{ label(profile.marital_status, g) }}</li>
-    <li>{% if profile.children %}детей: {{ profile.children }}{% else %}без детей{% endif %}</li>
-    <li>{{ label(profile.education) }}{% if profile.education.value != 'academic_degree' %} образование{% endif %}</li>
-    <li>{{ label(profile.employment) }}</li>
+    <li>{% if profile.marital_status %}{{ label(profile.marital_status, g) }}{% else %}семейное положение: <span class="unknown">не указано</span>{% endif %}</li>
+    <li>{% if profile.children is none %}дети: <span class="unknown">не указано</span>{% elif profile.children %}детей: {{ profile.children }}{% else %}без детей{% endif %}</li>
+    <li>{% if profile.education %}{{ label(profile.education) }}{% if profile.education.value != 'academic_degree' %} образование{% endif %}{% else %}образование: <span class="unknown">не указано</span>{% endif %}</li>
+    <li>{% if profile.employment %}{{ label(profile.employment) }}{% else %}занятость: <span class="unknown">не указано</span>{% endif %}</li>
   </ul>
-  <p class="pcard__wishes"><b>Ищет:</b> {{ profile.wishes|truncate(140, true, '…', 0) }}</p>
+  {% if profile.wishes %}<p class="pcard__wishes"><b>Ищет:</b> {{ profile.wishes|truncate(140, true, '…', 0) }}</p>{% endif %}
   <div class="pcard__foot">
     {% if profile.user_id in wali_ids %}{{ wali_badge(short=true) }}{% else %}<span></span>{% endif %}
     <span class="pcard__more" aria-hidden="true">{{ icon('arrow-right') }}</span>
   </div>
 </article>
+{%- endmacro %}
+
+{# Banner «Дополнить анкету (1 минута)» for a profile migrated from the legacy bot. ``missing`` = field names. #}
+{% macro complete_banner(missing) -%}
+<section class="card complete-banner" aria-labelledby="complete-title">
+  <div class="complete-banner__icon">{{ icon('edit') }}</div>
+  <div class="complete-banner__body">
+    <h2 id="complete-title">Дополните анкету — это 1 минута</h2>
+    <p>Анкета перенесена из Telegram-бота. Не хватает: {% for name in missing %}{{ FIELD_NAMES.get(name, name) }}{{ ', ' if not loop.last }}{% endfor %}. Пока поля пустые, другие видят «не указано».</p>
+  </div>
+  <a class="btn btn-primary" href="/me/complete">Дополнить анкету (1 минута)</a>
+</section>
+{%- endmacro %}
+
+{# Why a chat was closed, for its participants. #}
+{% macro close_reason(conversation, me) -%}
+{% set reason = conversation.close_reason.value if conversation.close_reason else '' %}
+{% if reason == 'closed_by_witness' %}Свидетель завершил этот чат. Если есть вопросы — обратитесь к админу.
+{%- elif reason == 'account_deleted' %}Собеседник удалил аккаунт.
+{%- elif reason == 'user_banned' %}Чат закрыт модератором.
+{%- elif conversation.closed_by_id == me.id %}Вы завершили общение.
+{%- else %}Собеседник завершил общение.{% endif %}
 {%- endmacro %}

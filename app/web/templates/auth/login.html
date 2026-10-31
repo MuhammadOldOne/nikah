@@ -1,14 +1,14 @@
 {% extends "base.html" %}
-{% block title %}Вход — Истина{% endblock %}
+{% block title %}Вход — Никах Истина{% endblock %}
 {% block robots %}index, follow{% endblock %}
 {% block head %}<script src="{{ static_url('js/login.js') }}" defer></script>{% endblock %}
 {% block container_class %}container--narrow{% endblock %}
 {% block content %}
 <section class="card card-pad login-card" id="login" data-poll-url="{{ poll_url }}" data-resume="{{ '1' if resumed else '0' }}" aria-labelledby="login-title">
   <div class="center">
-    {{ m.brand_mark() }}
-    <h1 id="login-title">Вход через Telegram</h1>
-    <p class="muted">Аккаунт на сайте — тот же, что в боте @{{ settings.BOT_USERNAME }}: анкета, отклики и чаты общие.</p>
+    {{ m.logo('login-logo', 112) }}
+    <h1 id="login-title">Вход в «Никах Истину»</h1>
+    <p class="muted">Через Telegram: аккаунт на сайте — тот же, что в боте @{{ settings.BOT_USERNAME }}. Анкета, её номер, отклики и чаты общие.</p>
   </div>
 
   <div class="stack">

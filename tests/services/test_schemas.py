@@ -22,7 +22,6 @@ from app.text import clean_line, clean_text, find_contacts, plural
 def valid_profile(**overrides: object) -> dict[str, object]:
     data: dict[str, object] = {
         "gender": "female",
-        "name": "Фатима",
         "birth_year": current_year() - 25,
         "city": "Казань",
         "marital_status": "never_married",
@@ -51,7 +50,6 @@ def test_all_required_fields_are_required():
     errors = errors_of(ProfileCreate, {})
     assert set(errors) == {
         "gender",
-        "name",
         "birth_year",
         "city",
         "marital_status",
@@ -61,7 +59,7 @@ def test_all_required_fields_are_required():
         "wishes",
     }
     assert all(message == REQUIRED_MESSAGE for message in errors.values())
-    assert errors_of(ProfileCreate, valid_profile(name="  ", education=""))["name"] == REQUIRED_MESSAGE
+    assert errors_of(ProfileCreate, valid_profile(city="  ", education=""))["city"] == REQUIRED_MESSAGE
 
 
 def test_optional_fields_are_parsed():
@@ -113,8 +111,6 @@ def test_numeric_ranges(field: str, bad: int, good: int):
 
 
 def test_text_lengths():
-    assert "name" in errors_of(ProfileCreate, valid_profile(name="Ф"))
-    assert "name" in errors_of(ProfileCreate, valid_profile(name="Ф" * 41))
     assert "wishes" in errors_of(ProfileCreate, valid_profile(wishes="коротко"))
     assert "wishes" in errors_of(ProfileCreate, valid_profile(wishes="а" * 1001))
     assert "about" in errors_of(ProfileCreate, valid_profile(about="а" * 2001))
@@ -138,12 +134,9 @@ def test_contacts_are_rejected_in_public_texts(contact: str):
     for field in ("about", "wishes"):
         errors = errors_of(ProfileCreate, valid_profile(**{field: f"Ищу мужа, {contact}"}))
         assert errors[field] == CONTACTS_MESSAGE
-    assert "name" in errors_of(ProfileCreate, valid_profile(name=contact))
 
 
-def test_name_and_city_rules():
-    assert ProfileCreate.model_validate(valid_profile(name="  Анна-Мария  ")).name == "Анна-Мария"
-    assert "name" in errors_of(ProfileCreate, valid_profile(name="Фатима123"))
+def test_city_rules():
     assert ProfileCreate.model_validate(valid_profile(city="ростов-на-Дону")).city == "Ростов-на-Дону"
     assert ProfileCreate.model_validate(valid_profile(city="  Набережные   Челны ")).city == "Набережные Челны"
     assert "city" in errors_of(ProfileCreate, valid_profile(city="Казань!!!"))
@@ -158,7 +151,7 @@ def test_invalid_enum_value_has_russian_message():
 def test_profile_update_is_partial_and_rejects_clearing_required_fields():
     update = ProfileUpdate.model_validate({"city": "орёл", "about": "", "gender": "male"})
     assert update.changes() == {"city": "Орёл", "about": None}
-    assert errors_of(ProfileUpdate, {"name": ""}) == {"name": REQUIRED_MESSAGE}
+    assert errors_of(ProfileUpdate, {"marital_status": ""}) == {"marital_status": REQUIRED_MESSAGE}
     assert errors_of(ProfileUpdate, {"wishes": None}) == {"wishes": REQUIRED_MESSAGE}
     assert ProfileUpdate.model_validate({}).changes() == {}
 

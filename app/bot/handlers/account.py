@@ -1,4 +1,4 @@
-"""«🌐 Открыть сайт» (one-time magic link) and account deletion (/delete)."""
+"""«Сайт» (one-time magic link) and account deletion (/delete)."""
 
 from __future__ import annotations
 

@@ -99,3 +99,46 @@ def test_choices_and_opposite_gender():
         ("widowed", "вдова"),
     ]
     assert Gender.MALE.opposite is Gender.FEMALE and Gender.FEMALE.opposite is Gender.MALE
+
+
+def test_legacy_env_names_are_accepted_and_new_names_win(monkeypatch):
+    for name in ("TELEGRAM_TOKEN", "ADMIN_TELEGRAM_IDS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("BOT_TOKEN", "111:legacy")
+    monkeypatch.setenv("ADMIN_IDS", "11, 22")
+    legacy = make_settings()
+    assert legacy.TELEGRAM_TOKEN.get_secret_value() == "111:legacy" and legacy.ADMIN_TELEGRAM_IDS == [11, 22]
+    monkeypatch.setenv("TELEGRAM_TOKEN", "222:new")
+    monkeypatch.setenv("ADMIN_TELEGRAM_IDS", "33")
+    both = make_settings()
+    assert both.TELEGRAM_TOKEN.get_secret_value() == "222:new" and both.ADMIN_TELEGRAM_IDS == [33]
+    # An empty new value (copied from .env.example) does not hide the legacy one.
+    monkeypatch.setenv("TELEGRAM_TOKEN", "")
+    monkeypatch.setenv("ADMIN_TELEGRAM_IDS", "")
+    assert make_settings().TELEGRAM_TOKEN.get_secret_value() == "111:legacy"
+    assert make_settings().ADMIN_TELEGRAM_IDS == [11, 22]
+
+
+def test_legacy_integration_settings(monkeypatch):
+    defaults = make_settings()
+    assert (defaults.MAX_OPEN_CONVERSATIONS, defaults.CHAT_RATE_LIMIT_PER_MIN) == (1, 20)
+    assert defaults.WITNESS_CHAT_ID is None and defaults.TELEGRAM_PROXY is None
+    monkeypatch.setenv("WITNESS_CHAT_ID", "-1001234567890")
+    monkeypatch.setenv("TELEGRAM_PROXY", "socks5://user:secret@proxy.invalid:1080")
+    settings = make_settings()
+    assert settings.WITNESS_CHAT_ID == -1001234567890
+    assert settings.TELEGRAM_PROXY is not None
+    assert settings.TELEGRAM_PROXY.get_secret_value().startswith("socks5://")
+    assert "secret" not in repr(settings) and "secret" not in str(settings.TELEGRAM_PROXY)
+    monkeypatch.setenv("WITNESS_CHAT_ID", " ")
+    monkeypatch.setenv("TELEGRAM_PROXY", "")
+    assert make_settings().WITNESS_CHAT_ID is None and make_settings().TELEGRAM_PROXY is None
+    with pytest.raises(ValidationError):
+        make_settings(MAX_OPEN_CONVERSATIONS=0)
+    with pytest.raises(ValidationError):
+        make_settings(CHAT_RATE_LIMIT_PER_MIN=0)
+
+
+def test_new_labels():
+    assert label(enums.ConversationCloseReason.CLOSED_BY_WITNESS) == "чат завершил свидетель"
+    assert label(enums.MessageKind.WITNESS) == "сообщение свидетеля"

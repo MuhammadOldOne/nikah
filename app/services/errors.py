@@ -74,7 +74,25 @@ class ProfileUnderReview(ProfileNotFound):
 
 
 class ProfileNotActive(DomainError):
+    """The user's own profile is not published. With PREMODERATION on, browsing the catalog,
+    opening other profiles (except counterparts) and sending interests need an ACTIVE profile; the
+    subclasses say why it is not active."""
+
     default_message = "Отклики можно отправлять после того, как ваша анкета будет опубликована."
+
+
+class ProfilePending(ProfileNotActive):
+    default_message = "Ваша анкета ещё не одобрена. Смотреть анкеты и отправлять отклики можно после модерации."
+
+
+class ProfileRejected(ProfileNotActive):
+    default_message = (
+        "Ваша анкета отклонена модератором. Исправьте её — после проверки откроются просмотр анкет и отклики."
+    )
+
+
+class ProfileHidden(ProfileNotActive):
+    default_message = "Ваша анкета скрыта. Покажите её снова, чтобы смотреть анкеты и отправлять отклики."
 
 
 class ProfileStateError(DomainError):
@@ -89,8 +107,19 @@ class InterestAlreadyExists(DomainError):
     default_message = "Между вами уже есть отклик или переписка."
 
 
-class InterestDeclinedBefore(DomainError):
+class InterestSentBefore(DomainError):
+    """The sender's earlier interest to this person was accepted (or declined): one per direction,
+    as in the legacy bot; only a withdrawn (cancelled) interest may be sent again."""
+
+    default_message = "Вы уже отправляли отклик этой анкете. Повторный отклик невозможен."
+
+
+class InterestDeclinedBefore(InterestSentBefore):
     default_message = "Этот человек уже отклонил ваш отклик."
+
+
+class InterestBlockedByWitness(DomainError):
+    default_message = "Свидетель завершил ваш чат с этой анкетой, новый отклик невозможен. Вопросы — к админу."
 
 
 class InterestLimitReached(DomainError):
@@ -103,6 +132,10 @@ class InterestNotFound(NotFound):
 
 class InterestNotPending(DomainError):
     default_message = "На этот отклик уже ответили или его отозвали."
+
+
+class OpenConversationLimit(DomainError):
+    default_message = "У одного из участников уже есть открытый чат. Завершите его сначала."
 
 
 class MessageRateLimited(DomainError):
@@ -119,6 +152,14 @@ class ConversationClosed(DomainError):
 
 class PartnerDeleted(ConversationClosed):
     default_message = "Собеседник удалил аккаунт."
+
+
+class MessageNotFound(NotFound):
+    default_message = "Сообщение не найдено."
+
+
+class WitnessOnly(PermissionDenied):
+    default_message = "Только для свидетеля."
 
 
 class TokenInvalid(DomainError):
@@ -151,3 +192,7 @@ class ReportNotFound(NotFound):
 
 class ReportAlreadyResolved(DomainError):
     default_message = "Жалоба уже рассмотрена."
+
+
+class LegacyImportDone(DomainError):
+    default_message = "Перенос данных старого бота уже выполнен: повторный перенос невозможен."

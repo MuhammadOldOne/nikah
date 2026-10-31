@@ -58,7 +58,6 @@ def profile_form(**overrides: Any) -> dict[str, Any]:
     """A valid wizard submission (with all three confirmations)."""
     data: dict[str, Any] = {
         "gender": "female",
-        "name": "Марьям",
         "birth_year": str(current_year() - 25),
         "city": "Казань",
         "marital_status": "never_married",

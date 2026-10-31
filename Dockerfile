@@ -22,6 +22,7 @@ COPY app ./app
 USER app
 EXPOSE 8000
 
-# Apply migrations, then serve. Only Caddy reaches this port (it is not published), so the
-# X-Forwarded-* headers it sets can be trusted from any address of the compose network.
+# Apply migrations, then serve. Only the reverse proxy reaches this port (Caddy on the compose
+# network; in nginx mode it is published on 127.0.0.1 only), so the X-Forwarded-* headers it sets
+# can be trusted from any address.
 CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.web.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*' --workers 2 --timeout-graceful-shutdown 5"]

@@ -79,3 +79,52 @@ async def test_published_flagged_profile_can_be_taken_down(admin_client, session
     await session.refresh(refreshed)
     assert refreshed.status == ProfileStatus.REJECTED
     assert "Снять с публикации" not in (await admin_client.get(f"/admin/users/{profile.user_id}")).text
+
+
+async def test_flagged_messages_show_why_and_who(admin_client, session, make_pair, make_conversation):
+    from app.enums import ReportReason
+    from app.services import moderation, witness
+
+    man, woman = await make_pair()
+    conversation = await make_conversation(man, woman)
+    leak = await chat.send_message(session, conversation.id, woman, "Звоните +7 999 123-45-67", MessageOrigin.TELEGRAM)
+    marked = await chat.send_message(session, conversation.id, man, "Обычное сообщение", MessageOrigin.WEB)
+    reported = await chat.send_message(session, conversation.id, man, "Грубость", MessageOrigin.WEB)
+    await witness.witness_flag(session, admin_client.user, marked.id)
+    await moderation.create_report(session, woman, man.id, ReportReason.INSULT, message_id=reported.id)
+    await session.commit()
+
+    text = (await admin_client.get("/admin/flagged")).text
+    for message in (leak, marked, reported):
+        assert f'href="/admin/chats/{conversation.id}#m{message.id}"' in text
+    assert "фильтр контактов" in text and ">свидетель<" in text and ">жалоба<" in text
+    assert "Анкета №501</a> → <a" in text  # the sister wrote to the brother
+    assert "999 123" not in text and str(woman.telegram_id) not in text
+
+
+async def test_witness_messages_tab(admin_client, session, make_pair, make_conversation):
+    from app.services import witness
+
+    man, woman = await make_pair()
+    conversation = await make_conversation(man, woman)
+    await witness.witness_say(session, admin_client.user, conversation.id, "Свидетель напоминает о правилах")
+    await chat.send_message(session, conversation.id, man, "Есть тема с криптой", MessageOrigin.WEB)
+    await session.commit()
+
+    page = await admin_client.get("/admin/flagged", kind="witness")
+    assert "Свидетель напоминает о правилах" in page.text and "криптой" not in page.text
+    assert "Анкета №500" in page.text and "Анкета №501" in page.text
+    assert "Свидетель пока ничего не писал" in (await admin_client.get("/admin/flagged", kind="witness", page=2)).text
+
+
+async def test_legacy_age_flag_is_labelled(admin_client, make_profile):
+    from app.enums import ProfileStatus
+    from app.services.moderation import LEGACY_AGE_FLAG_REASON
+
+    await make_profile(
+        status=ProfileStatus.PENDING, flagged=True, flag_reason=LEGACY_AGE_FLAG_REASON, marital_status=None
+    )
+    page = await admin_client.get("/admin/flagged", kind="profiles")
+    assert "возраст при переносе" in page.text and "<mark>legacy age</mark>" not in page.text
+    queue = await admin_client.get("/admin/moderation")
+    assert "возраст при переносе" in queue.text and "не указано" in queue.text  # empty migrated field

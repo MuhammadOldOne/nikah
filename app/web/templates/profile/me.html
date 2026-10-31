@@ -1,25 +1,26 @@
 {% extends "base.html" %}
-{% block title %}Моя анкета — Истина{% endblock %}
+{% block title %}Моя анкета — Никах Истина{% endblock %}
 {% block content %}
 {% set g = profile.gender %}
 <div class="page-head">
   <div>
     <h1>Моя анкета</h1>
-    <p class="muted">#{{ profile.user_id }} · обновлена {{ profile.updated_at|msk_date }}</p>
+    <p class="muted">{{ profile_title(profile) }} · обновлена {{ profile.updated_at|msk_date }}</p>
   </div>
   <div class="row">
     <a class="btn btn-primary" href="/me/edit">{{ m.icon('edit') }} Редактировать</a>
-    <a class="btn btn-secondary" href="/u/{{ profile.user_id }}">{{ m.icon('eye') }} Как видят другие</a>
+    <a class="btn btn-secondary" href="/p/{{ profile.number }}">{{ m.icon('eye') }} Как видят другие</a>
   </div>
 </div>
 
 <div class="stack">
+  {% if missing %}{{ m.complete_banner(missing) }}{% endif %}
   {% if profile.status.value == 'pending' %}
-  {% call m.alert('warning', 'На модерации') %}<p>Анкету проверяет модератор — обычно это занимает до суток. Смотреть анкеты можно уже сейчас, откликаться — после публикации.</p>{% endcall %}
+  {% call m.alert('warning', 'На модерации') %}<p>Анкету проверяет модератор — обычно это занимает до суток. Смотреть анкеты и откликаться можно будет после публикации.</p>{% endcall %}
   {% elif profile.status.value == 'active' %}
   {% call m.alert('success', 'Опубликована') %}<p>Анкету видят {{ gendered(g, 'сёстры', 'братья') }} в каталоге и в боте.</p>{% endcall %}
   {% elif profile.status.value == 'hidden' %}
-  {% call m.alert('info', 'Скрыта') %}<p>Анкету не видно в каталоге. Начатые переписки продолжаются.</p>{% endcall %}
+  {% call m.alert('info', 'Скрыта') %}<p>Анкету не видно в каталоге. Начатые переписки продолжаются.{% if settings.PREMODERATION %} Пока анкета скрыта, смотреть чужие анкеты и откликаться нельзя.{% endif %}</p>{% endcall %}
   {% else %}
   {% call m.alert('error', 'Отклонена модератором') %}
   {% if profile.moderation_note %}<p><b>Причина:</b> {{ profile.moderation_note }}</p>{% endif %}
@@ -32,8 +33,8 @@
       <div class="profile-head">
         {{ m.avatar(g, 'lg') }}
         <div>
-          <h2 class="mb-0">{{ profile.name }}</h2>
-          <div class="muted">{{ gendered(g, 'Брат', 'Сестра') }} · {{ profile.city }}</div>
+          <h2 class="mb-0">{{ profile_title(profile) }} — {{ gender_word(g) }}</h2>
+          <div class="muted">{{ profile.birth_year|age }} {{ plural(profile.birth_year|age, 'год', 'года', 'лет') }} · {{ m.or_unknown(profile.city) }}</div>
           <div class="pills">
             <span class="pill {{ {'active': 'pill--success', 'pending': 'pill--warning', 'rejected': 'pill--danger'}.get(profile.status.value, '') }}">{{ label(profile.status) }}</span>
             {% if has_guardian %}{{ m.wali_badge(short=true) }}{% endif %}

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{# «Пожаловаться» on one message. Context: conversation, message, partner_profile, comment_max. #}
+{% block title %}Жалоба на сообщение — Никах Истина{% endblock %}
+{% block container_class %}container--form{% endblock %}
+{% block content %}
+<a class="back-link" href="/chats/{{ conversation.id }}">{{ m.icon('arrow-left', 'icon--sm') }} К переписке</a>
+<section class="card card-pad stack" aria-labelledby="report-title">
+  <h1 id="report-title">Жалоба на сообщение</h1>
+  <figure class="quote">
+    <blockquote class="quote__text">{{ message.text }}</blockquote>
+    <figcaption class="muted small">{% if partner_profile %}{{ profile_title(partner_profile) }} — {{ gender_word(partner_profile.gender) }}{% else %}Собеседник{% endif %}, {{ message.created_at|msk }}</figcaption>
+  </figure>
+  <form class="stack" method="post" action="/chats/{{ conversation.id }}/messages/{{ message.id }}/report">
+    {{ m.csrf_field() }}
+    <div class="field">
+      <label for="report-reason">Причина</label>
+      <select class="select" id="report-reason" name="reason" required>
+        <option value="">Выберите причину</option>
+        {% for value, text in choices(enums.ReportReason) %}<option value="{{ value }}">{{ text }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="report-comment">Комментарий <span class="muted">(необязательно)</span></label>
+      <textarea class="textarea" id="report-comment" name="comment" rows="3" maxlength="{{ comment_max }}" data-counter="{{ comment_max }}"></textarea>
+    </div>
+    <p class="hint mb-0">Жалобу получат свидетель и модератор, сообщение будет отмечено для проверки.</p>
+    <div class="row row--between">
+      <a class="btn btn-ghost" href="/chats/{{ conversation.id }}">Отмена</a>
+      <button class="btn btn-danger" type="submit">{{ m.icon('flag') }} Отправить жалобу</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

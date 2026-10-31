@@ -55,10 +55,14 @@ def render_partial(
     return templates.TemplateResponse(request, name, dict(context or {}), status_code=status_code)
 
 
+def toast_trigger(message: str, level: str = "error") -> str:
+    """``HX-Trigger`` header value that makes app.js show a notice (chat.js shows it by the composer)."""
+    return json.dumps({"toast": {"message": message, "level": level}})  # ASCII-only: safe as a header
+
+
 def toast_response(message: str, level: str = "error", *, status_code: int = 200) -> Response:
     """Reply to an HTMX request with a notice and no swap (app.js shows the ``toast`` event)."""
-    trigger = json.dumps({"toast": {"message": message, "level": level}})  # ASCII-only: safe as a header
-    return Response(status_code=status_code, headers={"HX-Reswap": "none", "HX-Trigger": trigger})
+    return Response(status_code=status_code, headers={"HX-Reswap": "none", "HX-Trigger": toast_trigger(message, level)})
 
 
 def redirect(request: Request, url: str) -> Response:

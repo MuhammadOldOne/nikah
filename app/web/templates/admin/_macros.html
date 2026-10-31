@@ -5,23 +5,40 @@
 {# Return to the current page (path + query) after a POST action. #}
 {% macro back() %}<input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">{% endmacro %}
 
+{# A person by profile number («Анкета №512»), as the bot names people; links to the user card. #}
 {% macro person(user) %}
 {%- if user is none -%}
 <span class="adm-muted">аккаунт удалён</span>
 {%- else -%}
-<a href="/admin/users/{{ user.id }}">{{ user.profile.name if user.profile else user.display_name }} (#{{ user.id }})</a>
+<a href="/admin/users/{{ user.id }}">{{ user_title(user) }}</a>
 {%- if user.is_banned %} <span class="adm-tag adm-tag--danger">заблокирован</span>{% endif -%}
 {%- endif -%}
 {% endmacro %}
+
+{# Who wrote a message to whom: «Анкета №A → Анкета №B», or the witness to both participants. #}
+{% macro message_route(message) %}
+{%- set conversation = message.conversation -%}
+{%- if message.is_witness -%}
+<span class="adm-tag adm-tag--witness">Свидетель</span> → {{ person(conversation.user_a) }} и {{ person(conversation.user_b) }}
+{%- else -%}
+{{ person(message.sender) }} → {{ person(conversation.user_b if message.sender_id == conversation.user_a_id else conversation.user_a) }}
+{%- endif -%}
+{% endmacro %}
+
+{% macro chat_link(conversation_id, message_id=none) %}<a href="/admin/chats/{{ conversation_id }}{% if message_id %}#m{{ message_id }}{% endif %}">чат #{{ conversation_id }}</a>{% endmacro %}
 
 {% macro profile_status(profile) %}
 <span class="adm-tag adm-tag--{{ profile.status.value }}">{{ label(profile.status) }}</span>
 {% endmacro %}
 
+{# Why something is flagged: contact filter / witness / report / legacy age, and stop words. #}
 {% macro flags(reason) %}
 {% if reason %}
-<p class="adm-flags"><span class="adm-tag adm-tag--warn">стоп-слова</span>
-  {% for word in reason.split(', ') %}<mark>{{ word }}</mark>{% if not loop.last %} {% endif %}{% endfor %}
+{% set reasons = flag_reasons(reason) %}
+<p class="adm-flags">
+  {%- for text in reasons.labels %}<span class="adm-tag adm-tag--warn">{{ text }}</span> {% endfor -%}
+  {%- if reasons.stop_words %}<span class="adm-tag adm-tag--warn">стоп-слова</span>
+  {% for word in reasons.stop_words %}<mark>{{ word }}</mark>{% if not loop.last %} {% endif %}{% endfor %}{% endif %}
 </p>
 {% endif %}
 {% endmacro %}

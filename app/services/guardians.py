@@ -16,7 +16,7 @@ from app.db import affected_rows
 from app.enums import GuardianStatus
 from app.models import Guardian, User
 from app.services import events
-from app.services.errors import GuardianInviteInvalid, GuardianSelf, UserBanned
+from app.services.errors import ConsentRequired, GuardianInviteInvalid, GuardianSelf, UserBanned
 from app.services.relations import open_conversation_partner_ids
 
 INVITE_TTL = timedelta(days=7)
@@ -30,10 +30,13 @@ def invite_link(token: str) -> str:
 async def create_invite(session: AsyncSession, ward: User) -> str:
     """Create a new invite (previous pending invites are revoked) and return its deep link.
 
-    The current active guardian, if any, stays until the new one accepts.
+    The current active guardian, if any, stays until the new one accepts. Needs the ward's consent
+    (a wali receives copies of the ward's conversations).
     """
     if ward.is_banned:
         raise UserBanned()
+    if ward.consent_at is None:
+        raise ConsentRequired()
     now = utcnow()
     await session.execute(
         update(Guardian)

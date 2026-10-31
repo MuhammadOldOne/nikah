@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from typing import Annotated, Any, Literal
 
@@ -10,6 +11,11 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 DEV_SECRET_KEY = "dev-insecure-secret-key-do-not-use-in-production"
 MIN_SECRET_KEY_LENGTH = 32
+_ID_SEPARATORS = re.compile(r"[\s,;]+")
+
+
+def _blank_to_none(value: Any) -> Any:
+    return None if isinstance(value, str) and not value.strip() else value
 
 
 class Settings(BaseSettings):
@@ -17,6 +23,10 @@ class Settings(BaseSettings):
 
     After validation the fields hold *effective* values: DEV_LOGIN_ENABLED is always
     False outside ENV=dev and SESSION_COOKIE_SECURE defaults to True in prod.
+
+    The legacy bot's variable names are accepted so its .env can be reused as is: BOT_TOKEN for
+    TELEGRAM_TOKEN and ADMIN_IDS for ADMIN_TELEGRAM_IDS. A non-empty new name wins; after
+    validation the new fields hold the effective values (do not read the legacy ones).
     """
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -33,15 +43,33 @@ class Settings(BaseSettings):
     DEV_LOGIN_ENABLED: bool = False
     TELEGRAM_WIDGET_ENABLED: bool = False
     SESSION_COOKIE_SECURE: bool | None = None
+    # Open conversations per person; accepting an interest is refused at the limit.
+    MAX_OPEN_CONVERSATIONS: int = Field(default=1, ge=1)
+    # Chat messages per person per minute, the site and Telegram together.
+    CHAT_RATE_LIMIT_PER_MIN: int = Field(default=20, ge=1)
+    # Telegram chat (usually a group, negative id) that receives copies of every chat message and the
+    # witness notices. Unset: each admin receives them in a private chat.
+    WITNESS_CHAT_ID: int | None = None
+    # Proxy for api.telegram.org (http://, https:// or socks5://); may contain credentials: never log it.
+    TELEGRAM_PROXY: SecretStr | None = None
+    # Legacy names (the old bot's .env), folded into TELEGRAM_TOKEN / ADMIN_TELEGRAM_IDS.
+    BOT_TOKEN: SecretStr = SecretStr("")
+    ADMIN_IDS: Annotated[list[int], NoDecode] = Field(default_factory=list)
 
-    @field_validator("ADMIN_TELEGRAM_IDS", mode="before")
+    @field_validator("ADMIN_TELEGRAM_IDS", "ADMIN_IDS", mode="before")
     @classmethod
     def _split_admin_ids(cls, value: Any) -> Any:
+        """``111,222`` (also with spaces or semicolons, as the legacy bot accepted)."""
         if isinstance(value, str):
-            return [int(part) for part in value.replace(" ", "").split(",") if part]
+            return [int(part) for part in _ID_SEPARATORS.split(value) if part]
         if isinstance(value, int):
             return [value]
         return value
+
+    @field_validator("WITNESS_CHAT_ID", "TELEGRAM_PROXY", mode="before")
+    @classmethod
+    def _optional(cls, value: Any) -> Any:
+        return _blank_to_none(value)
 
     @field_validator("SITE_URL")
     @classmethod
@@ -55,6 +83,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _apply_environment_rules(self) -> Settings:
+        if not self.TELEGRAM_TOKEN.get_secret_value().strip():
+            self.TELEGRAM_TOKEN = SecretStr(self.BOT_TOKEN.get_secret_value().strip())
+        if not self.ADMIN_TELEGRAM_IDS:
+            self.ADMIN_TELEGRAM_IDS = list(self.ADMIN_IDS)
         is_prod = self.ENV == "prod"
         secret = self.SECRET_KEY.get_secret_value()
         if not secret and not is_prod:

@@ -29,18 +29,20 @@ async def test_wizard_happy_path(client, dev_login, make_user, session):
     await dev_login(client, user)
     csrf = await csrf_of(client, "/profile/new")
     response = await client.post("/profile/new", data=profile_form(csrf_token=csrf, prayer="always"))
-    assert response.status_code == 303 and response.headers["location"] == "/catalog"
+    assert response.status_code == 303 and response.headers["location"] == "/me"
 
     profile = await profiles.get_profile(session, user.id)
     assert profile is not None and profile.status == ProfileStatus.PENDING
-    assert (profile.name, profile.gender, profile.prayer.value) == ("Марьям", Gender.FEMALE, "always")
+    assert (profile.number, profile.gender, profile.prayer.value) == (500, Gender.FEMALE, "always")
     refreshed = await users.get_by_id(session, user.id)
     await session.refresh(refreshed)
     assert refreshed.consent_at is not None
 
-    catalog = await client.get("/catalog")
-    assert "Анкета отправлена на модерацию" in catalog.text  # flash
-    assert "Ваша анкета на модерации" in catalog.text  # banner
+    me = await client.get("/me")
+    assert "Анкета №500 создана. Анкета отправлена на модерацию" in me.text  # flash
+    assert "На модерации" in me.text  # banner
+    catalog = await client.get("/catalog")  # browsing opens after approval: the gate page says so
+    assert catalog.status_code == 200 and "Ваша анкета на модерации" in catalog.text
     assert (await client.get("/profile/new")).headers["location"] == "/me"
 
 
@@ -60,7 +62,7 @@ async def test_wizard_validation_errors_keep_values(client, dev_login, make_user
     csrf = await csrf_of(client, "/profile/new")
     data = profile_form(
         csrf_token=csrf,
-        name="Марьям",
+        nationality="татарка",
         city="",
         wishes="пишите @maryam_k",
         birth_year=str(current_year() - 16),
@@ -76,7 +78,7 @@ async def test_wizard_validation_errors_keep_values(client, dev_login, make_user
     assert "Анкету можно создать только с 18 лет." in html
     assert "Без согласия на обработку данных" in html
     assert "Нужно принять правила" in html
-    assert 'value="Марьям"' in html  # preserved
+    assert 'value="татарка"' in html  # preserved
     assert "пишите @maryam_k</textarea>" in html
     assert 'data-initial-step="1"' in html
     assert 'name="confirm_age" value="yes" required checked' in html
@@ -87,7 +89,7 @@ async def test_wizard_escapes_user_input(client, dev_login, make_user):
     await dev_login(client, await make_user())
     csrf = await csrf_of(client, "/profile/new")
     response = await client.post(
-        "/profile/new", data=profile_form(csrf_token=csrf, name="<script>alert(1)</script>", wishes="<b>x</b>")
+        "/profile/new", data=profile_form(csrf_token=csrf, city="<script>alert(1)</script>", wishes="<b>x</b>")
     )
     assert response.status_code == 422
     assert "<script>alert(1)</script>" not in response.text
@@ -192,7 +194,7 @@ async def test_counterpart_with_an_edit_under_review_is_not_shown(client, login_
     await session.commit()
     login_client(client, woman)
 
-    response = await client.get(f"/u/{man.id}")
+    response = await client.get(f"/p/{man.profile.number}")
     assert response.status_code == 404
     assert "Анкета временно недоступна: её проверяет модератор." in response.text
     assert "Непроверенный текст" not in response.text

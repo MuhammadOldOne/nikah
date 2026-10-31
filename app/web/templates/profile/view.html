@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ profile.name }} — анкета — Истина{% endblock %}
+{% block title %}{{ profile_title(profile) }} — {{ gender_word(profile.gender) }} — Никах Истина{% endblock %}
 {% block content %}
 {% set g = profile.gender %}
 {% set interest = relation.interest if relation else none %}
@@ -10,8 +10,8 @@
     <div class="profile-head">
       {{ m.avatar(g, 'lg') }}
       <div>
-        <h1 id="profile-name">{{ profile.name }}, {{ profile.birth_year|age }}&nbsp;{{ plural(profile.birth_year|age, 'год', 'года', 'лет') }}</h1>
-        <div class="muted">{{ gendered(g, 'Брат', 'Сестра') }} · {{ profile.city }} · #{{ profile.user_id }}</div>
+        <h1 id="profile-name">{{ m.profile_heading(profile) }}</h1>
+        <div class="muted">{{ m.or_unknown(profile.city) }}{% if profile.nationality %} · {{ profile.nationality }}{% endif %}</div>
         <div class="pills">
           {% if has_guardian %}{{ m.wali_badge() }}{% endif %}
           {% if is_own %}<span class="pill">{{ label(profile.status) }}</span>{% endif %}
@@ -34,7 +34,7 @@
       {% if conversation %}
         <h2 id="action-title">Переписка</h2>
         {% if conversation.closed_at %}
-        <p class="muted">Общение с {{ gendered(g, 'этим братом', 'этой сестрой') }} завершено.</p>
+        <p class="muted">{{ m.close_reason(conversation, user) }}</p>
         <a class="btn btn-secondary btn-block" href="/chats/{{ conversation.id }}">Открыть историю</a>
         {% else %}
         <p class="muted">Отклик принят — вы можете переписываться.</p>
@@ -43,7 +43,7 @@
       {% elif interest and interest.status.value == 'pending' and interest.from_user_id == user.id %}
         <h2 id="action-title">Отклик отправлен</h2>
         <p class="muted">Вы откликнулись {{ interest.created_at|msk_date }}. Ждём ответа — мы сообщим в Telegram.</p>
-        <form method="post" action="/interests/{{ interest.id }}/cancel">{{ m.csrf_field() }}<input type="hidden" name="back" value="/u/{{ profile.user_id }}"><button class="btn btn-ghost btn-block" type="submit">Отозвать отклик</button></form>
+        <form method="post" action="/interests/{{ interest.id }}/cancel">{{ m.csrf_field() }}<input type="hidden" name="back" value="/p/{{ profile.number }}"><button class="btn btn-ghost btn-block" type="submit">Отозвать отклик</button></form>
       {% elif interest and interest.status.value == 'pending' %}
         <h2 id="action-title">{{ gendered(g, 'Он откликнулся', 'Она откликнулась') }} на вашу анкету</h2>
         <p class="muted">Примите отклик, чтобы начать переписку, или деликатно отклоните его.</p>
@@ -54,7 +54,7 @@
       {% elif own_profile.status.value != 'active' %}
         <h2 id="action-title">Откликнуться</h2>
         {% if own_profile.status.value == 'pending' %}
-        <p class="muted mb-0">Откликаться можно после того, как модератор опубликует вашу анкету.</p>
+        <p class="muted mb-0">Откликаться можно после того, как модератор одобрит вашу анкету.</p>
         {% elif own_profile.status.value == 'hidden' %}
         <p class="muted">Ваша анкета скрыта. Покажите её, чтобы откликаться.</p>
         <a class="btn btn-secondary btn-block" href="/me">Моя анкета</a>
@@ -64,12 +64,12 @@
         {% endif %}
       {% else %}
         <h2 id="action-title">Откликнуться</h2>
-        <form class="stack" method="post" action="/u/{{ profile.user_id }}/interest">
+        <form class="stack" method="post" action="/p/{{ profile.number }}/interest">
           {{ m.csrf_field() }}
           <div class="field">
             <label for="interest-message">Сообщение <span class="muted">(необязательно)</span></label>
             <textarea class="textarea" id="interest-message" name="message" rows="4" maxlength="{{ message_max }}" data-counter="{{ message_max }}" placeholder="Ассаляму алейкум! Коротко о себе и почему откликаетесь…" aria-describedby="interest-hint{% if interest_error %} interest-error{% endif %}"{% if interest_error %} aria-invalid="true"{% endif %}>{{ interest_draft or '' }}</textarea>
-            <p class="hint" id="interest-hint">Без контактов: обменяться ими можно в чате, когда отклик примут.</p>
+            <p class="hint" id="interest-hint">Без контактов: обменяться ими можно в чате, когда отклик примут. Переписку видит свидетель.</p>
             {% if interest_error %}<p class="field-error" id="interest-error" role="alert">{{ interest_error }}</p>{% endif %}
           </div>
           <button class="btn btn-primary btn-block btn-lg" type="submit">{{ m.icon('heart') }} Откликнуться</button>
@@ -79,7 +79,7 @@
 
     <details class="card card-pad report-box">
       <summary>{{ m.icon('flag', 'icon--sm') }} Пожаловаться</summary>
-      <form method="post" action="/u/{{ profile.user_id }}/report">
+      <form method="post" action="/p/{{ profile.number }}/report">
         {{ m.csrf_field() }}
         <div class="field">
           <label for="report-reason">Причина</label>

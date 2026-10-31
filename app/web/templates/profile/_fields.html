@@ -52,7 +52,6 @@
   {{ m.field_error(errors, 'gender') }}
 </fieldset>
 {% endif %}
-{{ text_input('name', 'Имя или псевдоним', required=true, hint='Можно не указывать настоящее имя. Фамилия не нужна.', maxlength=40, attrs='autocomplete="off" minlength="2"') }}
 <div class="form-grid form-grid--2">
   <div class="field{% if errors.get('birth_year') %} is-invalid{% endif %}">
     <label for="f-birth_year">Год рождения <span class="req" aria-hidden="true">*</span></label>

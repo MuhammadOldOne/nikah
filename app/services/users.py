@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 
 from sqlalchemy import delete, or_, select, update
@@ -12,11 +13,14 @@ from sqlalchemy.orm import selectinload
 from app.clock import utcnow
 from app.config import get_settings
 from app.enums import ConversationCloseReason, GuardianStatus, InterestStatus
-from app.models import Conversation, Guardian, Interest, User
+from app.models import Conversation, Guardian, Interest, Profile, User
 from app.services import chat
-from app.services.errors import AdminBanDenied
+from app.services.errors import AdminBanDenied, ConsentRequired, InvalidInput
 
 LAST_SEEN_INTERVAL = timedelta(minutes=1)
+_PROFILE_REF = re.compile(r"(?:№|#)\s*(\d{1,9})")
+_TELEGRAM_ID = re.compile(r"\d{1,19}")
+USER_REF_HINT = "Укажите Telegram ID (только цифры) или номер анкеты: №512 или #512."
 
 
 async def get_by_id(session: AsyncSession, user_id: int) -> User | None:
@@ -60,6 +64,22 @@ async def set_consent(session: AsyncSession, user: User) -> None:
         await session.flush()
 
 
+def needs_consent(user: User) -> bool:
+    """No consent to personal data processing recorded yet: accounts migrated from the legacy bot
+    (152-FZ: separate consent, asked at the first visit) and new accounts before the profile form.
+
+    Until it is given the person may read rules/help/legal pages, give consent, receive
+    notifications, read their own chats and interests, withdraw (cancel an interest, close a chat,
+    hide the profile, report a message in their own chat) and delete the account; every other
+    action raises ConsentRequired (docs/ARCHITECTURE.md §7)."""
+    return user.consent_at is None
+
+
+def require_consent(user: User) -> None:
+    if needs_consent(user):
+        raise ConsentRequired()
+
+
 async def set_notify(session: AsyncSession, user: User, enabled: bool) -> None:
     """Turn Telegram notifications on or off."""
     user.notify_telegram = enabled
@@ -79,6 +99,24 @@ async def end_web_sessions(session: AsyncSession, user: User) -> None:
     they are invalidated by raising ``session_version``). The bot is not affected."""
     user.session_version += 1
     await session.flush()
+
+
+async def resolve_user_ref(session: AsyncSession, ref: str) -> User | None:
+    """The user an admin command names (/ban, /unban): a Telegram id (digits, as in the legacy bot)
+    or a profile number «№512» / «#512». ``profile`` loaded; None if nobody matches.
+
+    Raises InvalidInput (USER_REF_HINT) for anything else."""
+    value = ref.strip()
+    if match := _PROFILE_REF.fullmatch(value):
+        return await session.scalar(
+            select(User)
+            .join(Profile, Profile.user_id == User.id)
+            .where(Profile.number == int(match.group(1)))
+            .options(selectinload(User.profile))
+        )
+    if _TELEGRAM_ID.fullmatch(value) and int(value) < 2**63:
+        return await get_by_telegram_id(session, int(value))
+    raise InvalidInput(USER_REF_HINT)
 
 
 def is_admin(user: User) -> bool:

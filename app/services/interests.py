@@ -1,4 +1,9 @@
-"""Interests (отклики): pending -> accepted / declined / cancelled. Accepting opens a conversation."""
+"""Interests (отклики): pending -> accepted / declined / cancelled. Accepting opens a conversation.
+
+Each direction of a pair has its own history (legacy bot: UNIQUE(from, to)): a sender may not
+send the same person another interest after an accepted or declined one, only after withdrawing
+(cancelling) their own; the reverse direction is independent. Accepting is refused when either
+person already has MAX_OPEN_CONVERSATIONS open conversations."""
 
 from __future__ import annotations
 
@@ -14,28 +19,30 @@ from sqlalchemy.orm import selectinload
 
 from app.clock import utcnow
 from app.config import get_settings
-from app.enums import InterestStatus, ProfileStatus
+from app.enums import ConversationCloseReason, InterestStatus, ProfileStatus
 from app.models import Conversation, Interest, Profile, User
 from app.schemas import InterestIn, first_error
 from app.services import chat, events
 from app.services.errors import (
+    ConsentRequired,
     InterestAlreadyExists,
+    InterestBlockedByWitness,
     InterestDeclinedBefore,
     InterestLimitReached,
     InterestNotFound,
     InterestNotPending,
+    InterestSentBefore,
     InterestToSelf,
     InvalidInput,
-    ProfileNotActive,
+    OpenConversationLimit,
     ProfileNotFound,
     UserBanned,
 )
-from app.services.profiles import approved_content, get_profile, has_approved_content
-from app.services.relations import report_exists_between
+from app.services.profiles import approved_content, get_profile, has_approved_content, require_active
+from app.services.relations import lock_users, report_exists_between
 from app.services.stopwords import flag_reason
 
 LIMIT_WINDOW = timedelta(hours=24)
-ACTIVE_STATUSES = (InterestStatus.PENDING, InterestStatus.ACCEPTED)
 
 
 def _between(user_id: int, other_id: int) -> ColumnElement[bool]:
@@ -50,7 +57,7 @@ class PairRelation:
     """What exists between the viewer and another user (for the buttons on a profile page)."""
 
     interest: Interest | None  # the latest interest in either direction
-    conversation: Conversation | None
+    conversation: Conversation | None  # the open one, else the latest closed one
 
 
 async def get_relation(session: AsyncSession, viewer: User, other_user_id: int) -> PairRelation:
@@ -66,26 +73,29 @@ async def send_interest(
 ) -> Interest:
     """Send an interest with an optional message (≤500 chars, no contacts).
 
-    Rules: sender not banned and has an ACTIVE profile; recipient's profile is ACTIVE, of the
-    opposite gender, owner not banned, no report between the two; no pending/accepted interest or
-    conversation for the pair in either direction; the recipient has not declined this sender
-    before; at most INTEREST_DAILY_LIMIT interests per sender in a rolling 24 hours.
+    Rules: sender not banned, has given consent and has an ACTIVE profile (ProfileRequired /
+    ProfilePending / ProfileRejected / ProfileHidden); the recipient's profile is ACTIVE, of the
+    opposite gender, owner not banned, no report between the two (else ProfileNotFound); no pending
+    interest in either direction and no open conversation for the pair (InterestAlreadyExists); no
+    conversation of the pair closed by the witness (InterestBlockedByWitness); the sender's earlier
+    interest to this person was not declined (InterestDeclinedBefore) or accepted
+    (InterestSentBefore) — a cancelled one may be sent again; at most INTEREST_DAILY_LIMIT
+    interests per sender in a rolling 24 hours (cancelled ones count).
     """
     if from_user.is_banned:
         raise UserBanned()
+    if from_user.consent_at is None:
+        raise ConsentRequired()
     if to_user_id == from_user.id:
         raise InterestToSelf()
     try:
         clean_message = InterestIn(message=message).message
     except ValidationError as exc:
         raise InvalidInput(first_error(exc)) from exc
-    # Serialize sends per sender so the daily limit cannot be raced. NO KEY UPDATE does not block
-    # the FK checks of concurrent inserts that reference this user (avoids deadlocks).
-    await session.execute(select(User.id).where(User.id == from_user.id).with_for_update(key_share=True))
+    # Serialize everything that concerns the two users (pair rules, the sender's daily limit).
+    await lock_users(session, from_user.id, to_user_id)
 
-    own = await get_profile(session, from_user.id)
-    if own is None or own.status != ProfileStatus.ACTIVE:
-        raise ProfileNotActive()
+    own = require_active(await get_profile(session, from_user.id))
     target = await get_profile(session, to_user_id)
     if (
         target is None
@@ -96,18 +106,34 @@ async def send_interest(
     ):
         raise ProfileNotFound()
 
-    active_interest = exists().where(_between(from_user.id, to_user_id), Interest.status.in_(ACTIVE_STATUSES))
-    if await session.scalar(select(active_interest)) or await chat.get_conversation_between(
+    pending = exists().where(_between(from_user.id, to_user_id), Interest.status == InterestStatus.PENDING)
+    if await session.scalar(select(pending)) or await chat.get_open_conversation_between(
         session, from_user.id, to_user_id
     ):
         raise InterestAlreadyExists()
-    declined = exists().where(
-        Interest.from_user_id == from_user.id,
-        Interest.to_user_id == to_user_id,
-        Interest.status == InterestStatus.DECLINED,
+    low, high = sorted((from_user.id, to_user_id))
+    closed_by_witness = exists().where(
+        Conversation.user_a_id == low,
+        Conversation.user_b_id == high,
+        Conversation.close_reason == ConversationCloseReason.CLOSED_BY_WITNESS,
     )
-    if await session.scalar(select(declined)):
+    if await session.scalar(select(closed_by_witness)):
+        raise InterestBlockedByWitness()
+    earlier = set(
+        (
+            await session.scalars(
+                select(Interest.status).where(
+                    Interest.from_user_id == from_user.id,
+                    Interest.to_user_id == to_user_id,
+                    Interest.status.in_((InterestStatus.DECLINED, InterestStatus.ACCEPTED)),
+                )
+            )
+        ).all()
+    )
+    if InterestStatus.DECLINED in earlier:
         raise InterestDeclinedBefore()
+    if earlier:
+        raise InterestSentBefore()
     sent_recently = await session.scalar(
         select(func.count())
         .select_from(Interest)
@@ -127,7 +153,7 @@ async def send_interest(
     try:
         async with session.begin_nested():
             session.add(interest)
-    except IntegrityError as exc:  # the recipient sent us an interest concurrently
+    except IntegrityError as exc:  # unique pending per direction (cannot happen under the locks)
         raise InterestAlreadyExists() from exc
     await events.emit(
         session,
@@ -139,10 +165,17 @@ async def send_interest(
 
 
 async def _lock_for_recipient(session: AsyncSession, interest_id: int, user: User) -> Interest:
+    """The pending interest addressed to ``user``, locked after both users' rows (lock order)."""
     if user.is_banned:
         raise UserBanned()
-    interest = await session.get(Interest, interest_id, with_for_update={"key_share": True}, populate_existing=True)
+    if user.consent_at is None:
+        raise ConsentRequired()
+    interest = await session.get(Interest, interest_id)
     if interest is None or interest.to_user_id != user.id:
+        raise InterestNotFound()
+    await lock_users(session, interest.from_user_id, interest.to_user_id)
+    interest = await session.get(Interest, interest_id, with_for_update={"key_share": True}, populate_existing=True)
+    if interest is None:
         raise InterestNotFound()
     if interest.status != InterestStatus.PENDING:
         raise InterestNotPending()
@@ -150,16 +183,22 @@ async def _lock_for_recipient(session: AsyncSession, interest_id: int, user: Use
 
 
 async def accept(session: AsyncSession, interest_id: int, user: User) -> Conversation:
-    """Recipient accepts: the interest becomes accepted and a conversation is created.
+    """Recipient accepts: the interest becomes accepted and a conversation is opened.
 
     The sender's profile must have approved content: a profile a moderator rejected (or that waits
-    for moderation after an edit) cannot gain a chat through interests sent before."""
+    for moderation after an edit) cannot gain a chat through interests sent before. Refused while
+    the pair has an open conversation (InterestAlreadyExists) or either person has
+    MAX_OPEN_CONVERSATIONS open conversations (OpenConversationLimit); both users' rows are locked
+    first, so concurrent accepts cannot exceed the limit."""
     interest = await _lock_for_recipient(session, interest_id, user)
     sender = await get_profile(session, interest.from_user_id)
     if sender is None or sender.user.is_banned or not has_approved_content(sender):
         raise ProfileNotFound()
-    if await chat.get_conversation_between(session, interest.from_user_id, interest.to_user_id):
-        raise InterestAlreadyExists()
+    if await chat.get_open_conversation_between(session, interest.from_user_id, interest.to_user_id):
+        raise InterestAlreadyExists("У вас уже есть открытый чат с этим человеком.")
+    open_counts = await chat.count_open_conversations(session, [interest.from_user_id, interest.to_user_id])
+    if max(open_counts.values()) >= get_settings().MAX_OPEN_CONVERSATIONS:
+        raise OpenConversationLimit()
     interest.status = InterestStatus.ACCEPTED
     interest.decided_at = utcnow()
     conversation = await chat.create_conversation(session, interest.from_user_id, interest.to_user_id, interest.id)
@@ -173,6 +212,16 @@ async def accept(session: AsyncSession, interest_id: int, user: User) -> Convers
             "to_user_id": interest.to_user_id,
         },
         notify_user_ids=[interest.from_user_id, interest.to_user_id],
+    )
+    await events.emit(
+        session,
+        events.EventKind.WITNESS_CONVERSATION_OPENED,
+        {
+            "conversation_id": conversation.id,
+            "interest_id": interest.id,
+            "user_a_id": conversation.user_a_id,
+            "user_b_id": conversation.user_b_id,
+        },
     )
     return conversation
 
@@ -193,7 +242,8 @@ async def decline(session: AsyncSession, interest_id: int, user: User) -> Intere
 
 
 async def cancel(session: AsyncSession, interest_id: int, user: User) -> Interest:
-    """Sender withdraws a pending interest (no notification)."""
+    """Sender withdraws a pending interest (no notification; allowed without consent). The sender
+    may send this person a new interest afterwards."""
     interest = await session.get(Interest, interest_id, with_for_update={"key_share": True}, populate_existing=True)
     if interest is None or interest.from_user_id != user.id:
         raise InterestNotFound()

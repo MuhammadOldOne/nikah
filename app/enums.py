@@ -127,10 +127,16 @@ class MessageOrigin(StrEnum):
     TELEGRAM = "telegram"
 
 
+class MessageKind(StrEnum):
+    USER = "user"  # written by a participant (sender_id set)
+    WITNESS = "witness"  # written by the witness (махрам/админ) to both participants (sender_id NULL)
+
+
 class ConversationCloseReason(StrEnum):
     CLOSED_BY_USER = "closed_by_user"
     ACCOUNT_DELETED = "account_deleted"
     USER_BANNED = "user_banned"
+    CLOSED_BY_WITNESS = "closed_by_witness"
 
 
 class GenderedLabel(NamedTuple):
@@ -236,10 +242,15 @@ _LABELS: dict[type[StrEnum], dict[StrEnum, str | GenderedLabel]] = {
         MessageOrigin.WEB: "сайт",
         MessageOrigin.TELEGRAM: "Telegram",
     },
+    MessageKind: {
+        MessageKind.USER: "сообщение участника",
+        MessageKind.WITNESS: "сообщение свидетеля",
+    },
     ConversationCloseReason: {
         ConversationCloseReason.CLOSED_BY_USER: "общение завершено",
         ConversationCloseReason.ACCOUNT_DELETED: "собеседник удалил аккаунт",
         ConversationCloseReason.USER_BANNED: "пользователь заблокирован",
+        ConversationCloseReason.CLOSED_BY_WITNESS: "чат завершил свидетель",
     },
 }
 

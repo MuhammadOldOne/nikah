@@ -4,10 +4,11 @@ Globals: ``csrf_token()``, ``label(value, gender=None)``, ``choices(EnumCls, gen
 ``settings``, ``age(birth_year)``, ``plural(n, one, few, many)`` (the word only:
 ``{{ n }} {{ plural(n, 'анкета', 'анкеты', 'анкет') }}``), ``static_url(path)`` (cache-busted),
 ``pop_flashes()``, ``gendered(gender, male, female, neutral)``, ``enums`` (the enum classes),
-``is_admin(user)``.
+``is_admin(user)``, ``profile_title(profile)`` («Анкета №512»), ``gender_word(gender)`` («Брат»/«Сестра»).
 Filters: ``age``, ``plural`` (same as the global: ``n|plural(...)``), ``msk`` (``dt|msk`` ->
 "31.10.2026 14:05", custom strftime format allowed), ``msk_time`` ("14:05"),
-``msk_date`` ("31 октября 2026"). All datetimes are shown in Moscow time.
+``msk_date`` ("31 октября 2026"), ``msk_day_time`` ("01.04 13:05", with the year when it is not the
+current one). All datetimes are shown in Moscow time.
 """
 
 from __future__ import annotations
@@ -22,11 +23,11 @@ from jinja2 import Environment, FileSystemLoader, pass_context
 from jinja2.runtime import Context
 
 from app import enums
-from app.clock import age_from_birth_year, current_year, to_moscow
+from app.clock import age_from_birth_year, current_year, msk_day_time, to_moscow
 from app.config import get_settings
 from app.enums import Gender, choices, label
 from app.services.users import is_admin
-from app.text import plural
+from app.text import gender_word, plural, profile_title
 from app.web.deps import get_csrf_token, pop_flashes
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -83,6 +84,10 @@ def format_msk_time(value: datetime | None) -> str:
     return format_msk(value, "%H:%M")
 
 
+def format_msk_day_time(value: datetime | None) -> str:
+    return msk_day_time(value) if value is not None else ""
+
+
 def format_msk_date(value: datetime | None) -> str:
     if value is None:
         return ""
@@ -109,6 +114,8 @@ env.globals.update(
     enums=enums,
     current_year=current_year,
     is_admin=is_admin,
+    profile_title=profile_title,
+    gender_word=gender_word,
 )
 env.filters.update(
     age=age_from_birth_year,
@@ -116,6 +123,7 @@ env.filters.update(
     msk=format_msk,
     msk_time=format_msk_time,
     msk_date=format_msk_date,
+    msk_day_time=format_msk_day_time,
 )
 
 templates = Jinja2Templates(env=env)

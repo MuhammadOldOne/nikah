@@ -1,5 +1,10 @@
 # Production stack: PostgreSQL 16 + website + Telegram bot + Caddy (automatic HTTPS).
 # Setup: cp .env.example .env, fill it in, then: docker compose up -d --build  (docs/DEPLOY.md)
+#
+# Variants (combined through COMPOSE_FILE in .env, so every command stays `docker compose ...`):
+#   docker-compose.nginx.yml        the server's nginx serves the site: no Caddy, web on 127.0.0.1
+#   docker-compose.hostproxy.yml    Telegram proxy on the host's 127.0.0.1: bot on the host network
+#   docker-compose.hostgateway.yml  Telegram proxy on the Docker bridge: host.docker.internal
 name: nikah
 
 x-logging: &logging
@@ -45,6 +50,8 @@ services:
     <<: *app
     # Applies migrations, then serves the site (the image's default command). Open live-chat
     # streams would otherwise hold up a restart: they are cut after 5 s and browsers reconnect.
+    # X-Forwarded-* headers are trusted from any address: the port is reachable only by Caddy (not
+    # published) or, in nginx mode, by local processes (published on 127.0.0.1 only).
     command: >-
       sh -c "alembic upgrade head && exec uvicorn app.web.main:app --host 0.0.0.0 --port 8000
       --proxy-headers --forwarded-allow-ips='*' --workers 2 --timeout-graceful-shutdown 5"
@@ -64,7 +71,8 @@ services:
     <<: *app
     # Exactly ONE replica, never scale it: Telegram delivers updates of a bot token to a single
     # long-polling client (a second poller gets "409 Conflict" and updates are split or lost).
-    # The same applies to the old bot process: stop it before starting this one (docs/DEPLOY.md).
+    # The same applies to the old bot process: stop it before starting this one (docs/CUTOVER.md).
+    # Telegram is reached through TELEGRAM_PROXY when set (see the hostproxy/hostgateway variants).
     command: ["python", "-m", "app.bot"]
     depends_on:
       db:

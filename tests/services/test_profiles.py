@@ -13,6 +13,7 @@ from app.services.errors import (
     InvalidInput,
     ProfileAlreadyExists,
     ProfileNotFound,
+    ProfilePending,
     ProfileRequired,
     ProfileStateError,
     UserBanned,
@@ -22,7 +23,6 @@ from app.services.errors import (
 def profile_data(gender: Gender = Gender.FEMALE, **overrides: object) -> ProfileCreate:
     data: dict[str, object] = {
         "gender": gender,
-        "name": "Фатима",
         "birth_year": current_year() - 25,
         "city": "Казань",
         "marital_status": "never_married",
@@ -192,9 +192,12 @@ async def test_catalog_excludes_report_relations_in_both_directions(session, mak
     assert total == 1 and [p.user_id for p in items] == [neutral.user_id]
 
 
-async def test_pending_profile_can_browse_but_users_without_profile_cannot(session, make_profile, make_user):
+async def test_only_active_profiles_browse_with_premoderation(session, make_profile, make_user, override_settings):
     pending = await make_profile(gender=Gender.MALE, status=ProfileStatus.PENDING)
     await make_profile(gender=Gender.FEMALE)
+    with pytest.raises(ProfilePending):
+        await profiles.list_catalog(session, pending.user)
+    override_settings(PREMODERATION=False)
     assert (await profiles.list_catalog(session, pending.user))[1] == 1
     with pytest.raises(ProfileRequired):
         await profiles.list_catalog(session, await make_user())

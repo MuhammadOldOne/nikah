@@ -6,13 +6,32 @@ import contextlib
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from aiogram.types import (
+    CallbackQuery,
+    ForceReply,
+    InlineKeyboardMarkup,
+    Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 
-ReplyMarkup = InlineKeyboardMarkup | ReplyKeyboardMarkup | ReplyKeyboardRemove
+from app.bot import keyboards
+from app.models import User
+from app.services import users
 
-# FSM data of dialogs in progress; dropped when a dialog ends. Other keys (catalog position and
-# filters) survive navigation.
-FLOW_KEYS = ("wizard", "interest_to", "report", "filter_draft", "reject")
+ReplyMarkup = InlineKeyboardMarkup | ReplyKeyboardMarkup | ReplyKeyboardRemove | ForceReply
+
+# FSM data of dialogs in progress; dropped when a dialog ends. Other keys (catalog filters, the
+# action waiting for consent) survive navigation.
+FLOW_KEYS = ("wizard", "interest_to", "report", "filter_draft", "reject", "witness_say")
+
+
+def menu(user: User | None) -> ReplyKeyboardMarkup:
+    """The main menu for this person: with or without a profile, «/admin» for admins."""
+    return keyboards.main_menu(
+        has_profile=user is not None and user.profile is not None,
+        is_admin=user is not None and users.is_admin(user),
+    )
 
 
 async def send(event: Message | CallbackQuery, text: str, reply_markup: ReplyMarkup | None = None) -> Message:

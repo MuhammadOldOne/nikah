@@ -16,10 +16,11 @@ from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramServerError, TelegramUnauthorizedError
 from aiogram.utils.token import TokenValidationError
 
-from app.bot.dispatcher import create_bot, create_dispatcher, set_commands
+from app.bot.dispatcher import create_bot, create_dispatcher, set_commands, telegram_session
 from app.bot.outbox import OutboxWorker, housekeeping
 from app.config import get_settings
-from app.db import dispose_engine
+from app.db import dispose_engine, session_scope
+from app.services import users
 from app.services.events import EventListener
 
 logger = logging.getLogger("app.bot")
@@ -45,10 +46,13 @@ async def wait_for_telegram(bot: Bot) -> None:
 
 async def serve(bot: Bot, dispatcher: Dispatcher) -> None:
     await wait_for_telegram(bot)
-    # A webhook left by the previous bot blocks getUpdates; pending updates are kept.
+    # A webhook left by the previous bot blocks getUpdates. Pending updates are kept: messages
+    # people sent while the old bot was being replaced must not be lost.
     await bot.delete_webhook(drop_pending_updates=False)
+    async with session_scope() as session:
+        admin_ids = await users.admin_telegram_ids(session)
     try:
-        await set_commands(bot)
+        await set_commands(bot, admin_ids)
     except TelegramAPIError as exc:
         logger.warning("could not register the command menu: %s", type(exc).__name__)
     await dispatcher.start_polling(bot, handle_signals=False, close_bot_session=False)
@@ -67,7 +71,11 @@ async def run() -> None:
     if not token:
         raise SystemExit("TELEGRAM_TOKEN is not set: the bot cannot start.")
     try:
-        bot = create_bot(token)
+        session = telegram_session()
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    try:
+        bot = create_bot(token, session=session)
     except TokenValidationError:
         raise SystemExit("TELEGRAM_TOKEN is malformed: the bot cannot start.") from None
     dispatcher = create_dispatcher()

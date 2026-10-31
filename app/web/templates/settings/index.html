@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Настройки — Истина{% endblock %}
+{% block title %}Настройки — Никах Истина{% endblock %}
 {% block container_class %}container--narrow{% endblock %}
 {% block content %}
 <div class="page-head">
@@ -18,7 +18,7 @@
       <div class="more__body">
         <ul class="list-plain">
           <li>копию каждого сообщения во всех ваших чатах — и ваших, и собеседника;</li>
-          <li>пометку, чья это переписка: имя собеседника и номер анкеты;</li>
+          <li>пометку, чья это переписка: номера анкет обоих собеседников;</li>
           <li>собеседники видят значок «👁 Вали подключён — переписка видна вали».</li>
         </ul>
         <p class="muted mb-0">Вали не получает доступа к вашему аккаунту и не может писать от вашего имени. Отключить его можно в любой момент.</p>
@@ -68,7 +68,7 @@
     <h2 id="wards-title">Вы — вали</h2>
     <p class="muted">Бот присылает вам копии переписок:</p>
     <ul class="list-plain">
-      {% for link in wards %}<li>{{ link.ward.profile.name if link.ward.profile else link.ward.display_name }} (#{{ link.ward_user_id }}) — с {{ link.linked_at|msk_date }}</li>{% endfor %}
+      {% for link in wards %}<li>{% if link.ward.profile %}{{ profile_title(link.ward.profile) }} — {{ gender_word(link.ward.profile.gender) }}{% else %}Подопечный без анкеты{% endif %} — с {{ link.linked_at|msk_date }}</li>{% endfor %}
     </ul>
   </section>
   {% endif %}
@@ -94,7 +94,7 @@
     <h2 id="account-title">Аккаунт</h2>
     <dl class="facts">
       <div><dt>Telegram</dt><dd>{{ ('@' ~ user.username) if user.username else (user.first_name or '—') }}</dd></div>
-      <div><dt>Номер анкеты</dt><dd>#{{ user.id }}</dd></div>
+      {% if user.profile %}<div><dt>Анкета</dt><dd><a href="/me">{{ profile_title(user.profile) }}</a></dd></div>{% endif %}
       {% if user.consent_at %}<div><dt>Согласие на обработку данных</dt><dd>{{ user.consent_at|msk_date }} · <a href="/consent">текст</a></dd></div>{% endif %}
     </dl>
     <p class="small muted">«Выйти» завершает вход на сайт на всех устройствах — например, если вы входили с чужого телефона.</p>

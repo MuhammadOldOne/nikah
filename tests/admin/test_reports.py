@@ -33,6 +33,9 @@ async def test_open_reports_page(admin_client, session, make_pair, make_conversa
     assert f"Жалоба #{report.id}" in text and "мошенничество" in text
     assert "Просит денег" in text
     assert "<mark>переведи деньги</mark>, верну &lt;завтра&gt;" in text.lower()
+    # A report on a specific message: its excerpt, why it is flagged and a link into the chat.
+    assert "Жалоба на сообщение" in text and f'href="/admin/chats/{conversation.id}#m{message.id}"' in text
+    assert ">жалоба<" in text and "стоп-слова" in text
     assert f"/admin/users/{man.id}" in text and f"/admin/users/{woman.id}" in text
     assert str(man.telegram_id) not in text and str(woman.telegram_id) not in text
     for action in ReportAction:
@@ -50,7 +53,8 @@ async def test_dismiss(admin_client, session, make_pair):
     assert report.resolved_by_id == admin_client.user.id
     assert (await _fresh(session, Profile, man.id)).status == ProfileStatus.ACTIVE
     resolved = await admin_client.get("/admin/reports", status="resolved")
-    assert "жалоба отклонена" in resolved.text and f"модератор #{admin_client.user.id}" in resolved.text
+    assert "жалоба отклонена" in resolved.text
+    assert f'<a href="/admin/users/{admin_client.user.id}">модератор</a>' in resolved.text
 
 
 async def test_hide_profile(admin_client, session, make_pair):

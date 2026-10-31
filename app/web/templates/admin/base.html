@@ -7,22 +7,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
   <meta name="color-scheme" content="light dark">
-  <title>{% block title %}Админка{% endblock %} — Истина</title>
+  <title>{% block title %}Админка{% endblock %} — Никах Истина</title>
   <link rel="stylesheet" href="{{ static_url('css/admin.css') }}">
 </head>
 <body>
   <header class="adm-header">
     <div class="adm-wrap adm-header__inner">
-      <a class="adm-brand" href="/admin">Истина <span>админка</span></a>
+      <a class="adm-brand" href="/admin">Никах Истина <span>админка</span></a>
       <nav class="adm-nav" aria-label="Разделы админки">
         <a href="/admin"{% if path == '/admin' %} aria-current="page"{% endif %}>Сводка</a>
         <a href="/admin/moderation"{% if path.startswith('/admin/moderation') %} aria-current="page"{% endif %}>Модерация{% if nav.pending_profiles %} <span class="adm-count">{{ nav.pending_profiles }}</span>{% endif %}</a>
         <a href="/admin/reports"{% if path.startswith('/admin/reports') %} aria-current="page"{% endif %}>Жалобы{% if nav.open_reports %} <span class="adm-count">{{ nav.open_reports }}</span>{% endif %}</a>
-        <a href="/admin/flagged"{% if path.startswith('/admin/flagged') %} aria-current="page"{% endif %}>Стоп-слова</a>
+        <a href="/admin/flagged"{% if path.startswith('/admin/flagged') %} aria-current="page"{% endif %}>Помеченное</a>
+        <a href="/admin/chats"{% if path.startswith('/admin/chats') %} aria-current="page"{% endif %}>Чаты</a>
         <a href="/admin/users"{% if path.startswith('/admin/users') %} aria-current="page"{% endif %}>Пользователи</a>
       </nav>
       <div class="adm-header__me">
-        <span class="adm-muted">{{ admin.display_name }} (#{{ admin.id }})</span>
+        <span class="adm-muted">{{ admin.first_name or ('@' ~ admin.username if admin.username else 'администратор') }}</span>
         <a href="/">На сайт</a>
         <form method="post" action="/logout">{{ am.csrf() }}<button type="submit" class="adm-linkbtn">Выйти</button></form>
       </div>

@@ -3,6 +3,7 @@ import asyncio
 import pytest
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.enums import ConversationCloseReason, Gender, MessageOrigin
 from app.models import Outbox
 from app.services import chat, guardians, users
@@ -72,7 +73,7 @@ async def test_only_participants_can_write_and_read(session, make_pair, make_con
     with pytest.raises(ConversationNotFound):
         await chat.send_message(session, 999999, man, "привет", MessageOrigin.WEB)
     loaded = await chat.get_conversation_for_participant(session, conversation.id, woman)
-    assert {loaded.user_a.profile.name, loaded.user_b.profile.name} == {"Ахмад", "Фатима"}
+    assert {loaded.user_a.profile.gender, loaded.user_b.profile.gender} == {Gender.MALE, Gender.FEMALE}
 
 
 async def test_message_validation_and_flagging(session, make_pair, make_conversation):
@@ -85,8 +86,9 @@ async def test_message_validation_and_flagging(session, make_pair, make_conversa
     flagged = await chat.send_message(
         session, conversation.id, man, "Переведи деньги на карту 4276 1234 5678 9012", MessageOrigin.WEB
     )
-    assert flagged.flagged is True
-    assert "4276 1234 5678 9012" in flagged.flag_reason
+    assert flagged.flagged is True and flagged.contacts_hidden  # a card number is hidden like a phone
+    assert flagged.text == "Переведи деньги на карту [скрыто свидетелем]"
+    assert flagged.flag_reason.startswith("contact-leak filter, ") and "переведи" in flagged.flag_reason
     # Flagged messages are delivered anyway.
     assert await session.scalar(select(Outbox).where(Outbox.kind == "message.created")) is not None
 
@@ -146,7 +148,8 @@ async def test_list_messages_pagination(session, make_pair, make_conversation):
     assert [m.id for m in await chat.list_messages(session, conversation, before_id=ids[4], limit=2)] == ids[2:4]
 
 
-async def test_unread_counts_and_mark_read(session, make_pair, make_conversation, make_profile):
+async def test_unread_counts_and_mark_read(session, make_pair, make_conversation, make_profile, override_settings):
+    override_settings(MAX_OPEN_CONVERSATIONS=2)
     man, woman = await make_pair()
     other_woman = (await make_profile(gender=Gender.FEMALE)).user
     first = await make_conversation(man, woman)
@@ -162,7 +165,7 @@ async def test_unread_counts_and_mark_read(session, make_pair, make_conversation
     assert [s.conversation.id for s in summaries] == [first.id, second.id]  # most recent activity first
     assert [s.unread_count for s in summaries] == [2, 1]
     assert summaries[0].last_message.text == "4"
-    assert summaries[0].partner.id == woman.id and summaries[0].partner_profile.name == "Фатима"
+    assert summaries[0].partner.id == woman.id and summaries[0].partner_profile.gender == Gender.FEMALE
     assert summaries[0].partner_has_guardian is False
 
     assert await chat.mark_read(session, first, man) == 2
@@ -227,7 +230,7 @@ async def test_messages_per_minute_are_limited(session, make_pair, make_conversa
 
     man, woman = await make_pair()
     conversation = await make_conversation(man, woman)
-    for number in range(chat.MESSAGES_PER_MINUTE):
+    for number in range(get_settings().CHAT_RATE_LIMIT_PER_MIN):
         await chat.send_message(session, conversation.id, man, f"Сообщение {number}", MessageOrigin.WEB)
     with pytest.raises(MessageRateLimited):
         await chat.send_message(session, conversation.id, man, "Ещё одно", MessageOrigin.TELEGRAM)

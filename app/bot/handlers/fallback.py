@@ -1,4 +1,4 @@
-"""Last-resort handlers: cancel buttons, non-text content, chat relay and stale buttons."""
+"""Last-resort handlers: cancel buttons, non-text content, chat relay and unknown buttons."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ async def on_cancel_button(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 async def on_non_text(message: Message) -> None:
-    # Photos, voice, video, stickers, documents, contacts, locations…: the platform is text-only.
+    # Photos, voice, video, stickers, documents, contacts, locations…: the legacy rule, text only.
     await message.answer(texts.MEDIA_REJECTED)
 
 
@@ -29,7 +29,8 @@ async def on_text_in_dialog(message: Message) -> None:
 
 
 async def on_stale_callback(callback: CallbackQuery) -> None:
-    await callback.answer(texts.STALE_BUTTON)
+    """Any button nobody handles (an old format, a dialog that ended): a polite answer."""
+    await callback.answer(texts.STALE_BUTTON, show_alert=True)
 
 
 def create_router() -> Router:

@@ -8,7 +8,7 @@
 <article class="adm-card" id="p{{ profile.user_id }}">
   <header class="adm-card__head">
     {% set age = profile.birth_year|age %}
-    <h2>{{ profile.name }}, {{ age }} {{ plural(age, 'год', 'года', 'лет') }} — {{ profile.city }}</h2>
+    <h2>{{ profile_title(profile) }}, {{ age }} {{ plural(age, 'год', 'года', 'лет') }} — {{ profile.city }}</h2>
     <p class="adm-meta">
       {{ am.person(profile.user) }} · {{ label(profile.gender) }}
       · отправлена {{ profile.submitted_at|msk }}

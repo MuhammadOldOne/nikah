@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{# The catalog, other people's profiles and sending interests open once one's own profile is
+   published (PREMODERATION, a rule of the legacy bot). Context: own_profile, reason, missing. #}
+{% block title %}Анкеты откроются после модерации — Никах Истина{% endblock %}
+{% block container_class %}container--narrow{% endblock %}
+{% block content %}
+{% set st = own_profile.status.value %}
+<section class="card card-pad gate" aria-labelledby="gate-title">
+  <div class="gate__icon">{{ m.icon({'pending': 'clock', 'rejected': 'alert', 'hidden': 'eye-off'}.get(st, 'lock')) }}</div>
+  {% if st == 'pending' %}
+  <h1 id="gate-title">Ваша анкета на модерации</h1>
+  <p class="lead">{{ reason }}</p>
+  <p class="muted">Обычно проверка занимает до суток — бот @{{ settings.BOT_USERNAME }} сообщит, когда анкету одобрят. Так мы защищаем сестёр от фейковых анкет, собирающих чужие данные.</p>
+  {% elif st == 'rejected' %}
+  <h1 id="gate-title">Ваша анкета отклонена</h1>
+  {% if own_profile.moderation_note %}
+  <div class="gate__reason"><b>Причина:</b> {{ own_profile.moderation_note }}</div>
+  {% endif %}
+  <p class="lead">{{ reason }}</p>
+  {% else %}
+  <h1 id="gate-title">Ваша анкета скрыта</h1>
+  <p class="lead">{{ reason }}</p>
+  <p class="muted">Начатые переписки продолжаются — их можно открыть в разделе «Чаты».</p>
+  {% endif %}
+  <div class="row gate__actions">
+    {% if st == 'rejected' %}
+    <a class="btn btn-primary" href="/me/edit">{{ m.icon('edit') }} Исправить анкету</a>
+    {% elif st == 'hidden' %}
+    <form method="post" action="/me/show">{{ m.csrf_field() }}<button class="btn btn-primary" type="submit">{{ m.icon('eye') }} Показать анкету</button></form>
+    {% endif %}
+    <a class="btn btn-secondary" href="/me">Моя анкета</a>
+    <a class="btn btn-ghost" href="/interests">Отклики</a>
+    <a class="btn btn-ghost" href="/chats">Чаты</a>
+  </div>
+</section>
+{% if missing %}<div class="mt-16">{{ m.complete_banner(missing) }}</div>{% endif %}
+{% endblock %}

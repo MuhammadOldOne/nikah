@@ -45,7 +45,8 @@ BACKOFF_MAX = timedelta(hours=1)
 
 
 class EventKind(StrEnum):
-    MESSAGE_CREATED = "message.created"
+    MESSAGE_CREATED = "message.created"  # a participant's message (kind 'user')
+    MESSAGE_WITNESS = "message.witness"  # the witness wrote to both participants (kind 'witness')
     INTEREST_CREATED = "interest.created"
     INTEREST_ACCEPTED = "interest.accepted"
     INTEREST_DECLINED = "interest.declined"
@@ -54,6 +55,11 @@ class EventKind(StrEnum):
     PROFILE_MODERATED = "profile.moderated"
     REPORT_CREATED = "report.created"
     GUARDIAN_LINKED = "guardian.linked"
+    # Delivered to the witness (WITNESS_CHAT_ID, or each admin when it is unset); no SSE user_ids.
+    WITNESS_COPY = "witness.copy"
+    WITNESS_CONVERSATION_OPENED = "witness.conversation_opened"
+    WITNESS_CONVERSATION_CLOSED = "witness.conversation_closed"
+    WITNESS_REPORT = "witness.report"
 
 
 # Synthetic event delivered by EventListener to its subscribers after the LISTEN connection was

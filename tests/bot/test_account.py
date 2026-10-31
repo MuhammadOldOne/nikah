@@ -87,3 +87,13 @@ async def test_help_and_unknown_command(harness, make_user):
     assert "/delete" in harness.last_text(user)
     await harness.text(user, "/unknown")
     assert harness.last_text(user) == texts.UNKNOWN_COMMAND
+
+
+async def test_settings_and_site_answer_their_legacy_style_and_emoji_labels(harness, make_user):
+    user = await make_user()
+    for label in ("Настройки", "⚙️ Настройки"):
+        await harness.text(user, label)
+        assert harness.last_text(user).startswith("<b>Настройки</b>")
+    for label in ("Сайт", "🌐 Открыть сайт"):
+        await harness.text(user, label)
+        assert harness.last_text(user) == texts.SITE_LINK
