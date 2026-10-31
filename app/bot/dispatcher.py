@@ -16,19 +16,22 @@ from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, ErrorEvent
 
 from app.bot import texts
 from app.bot.handlers import create_router
-from app.bot.logutil import exc_summary
-from app.bot.middlewares import DbSessionMiddleware, UserMiddleware
+from app.bot.middlewares import CommitBeforeTelegram, DbSessionMiddleware, UserMiddleware
+from app.logutil import exc_summary
 
 logger = logging.getLogger(__name__)
 
 
 def create_bot(token: str, session: BaseSession | None = None) -> Bot:
-    """HTML parse mode everywhere (user text is escaped in app.bot.render) and no link previews."""
-    return Bot(
+    """HTML parse mode everywhere (user text is escaped in app.bot.render) and no link previews.
+    Update handlers commit their database work before each Telegram call (CommitBeforeTelegram)."""
+    bot = Bot(
         token=token,
         session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True),
     )
+    bot.session.middleware(CommitBeforeTelegram())
+    return bot
 
 
 async def on_error(event: ErrorEvent) -> bool:

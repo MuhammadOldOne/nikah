@@ -15,6 +15,7 @@ app/
   models.py        SQLAlchemy 2 models (spec section 6)
   schemas.py       pydantic input validation shared by web and bot (Russian messages)
   text.py          clean_line/clean_text, find_contacts, plural, normalize_city_key
+  logutil.py       exc_summary(exc): exception type + frames without the message (no personal data in logs)
   services/        THE ONLY PLACE FOR BUSINESS RULES (web and bot call these)
     errors.py      DomainError hierarchy (Russian .message)
     events.py      outbox + NOTIFY, outbox worker helpers, EventListener
@@ -28,7 +29,7 @@ app/
     routes/        public auth profile catalog interests chats settings admin legal (router = APIRouter())
     templates/base.html, static/
   bot/             aiogram 3 bot + outbox worker (bot agent): python -m app.bot
-migrations/        Alembic (async env, URL from settings); 0001 = initial schema
+migrations/        Alembic (async env, URL from settings); 0001 = initial schema, 0002 = users.session_version + outbox (kind, created_at)
 tests/             conftest.py (shared fixtures), services/, test_web_skeleton.py
 ```
 
@@ -70,6 +71,12 @@ Always call `get_settings()` at use time (not at import) so tests can override v
   A generator dependency (`yield`) that depends on `SessionDep` must itself use `scope="function"`.
 - **Bot**: an outer middleware wraps each update in `async with session_scope() as session:`
   (commit on success, rollback on exception) and passes `session` + the `User` to handlers.
+  Telegram calls cannot be rolled back, so a Bot API request middleware (`CommitBeforeTelegram`)
+  commits the update's work **before every Bot API call**: a call that fails afterwards (network
+  error, "query is too old") never undoes an action the user was told about. A rejected
+  `answerCallbackQuery` does not abort the handler.
+- **Lock order**: a users row before a conversation row (the bot and the site update the sender's
+  `last_seen_at` before sending; `chat.force_close` updates users before the conversation).
 - **Workers** (outbox, periodic purge): one `session_scope()` per batch.
 - `expire_on_commit=False`: objects stay usable after commit. Relationships are lazy and **async
   lazy loading raises**: use what services eager-load (listed below) or
@@ -83,15 +90,15 @@ Public identifier of a person is `users.id` (`/u/{id}`, bot `p_<id>`, "Имя (#
 
 | Table | Key columns / rules |
 |---|---|
-| `users` | `telegram_id` unique, `username`, `first_name`, `phone`, `is_admin`, `is_banned`, `banned_at`, `notify_telegram` (default true), `consent_at`, `bot_active_conversation_id` (FK conversations, SET NULL), `last_seen_at`, `created_at`. Property `display_name`. |
+| `users` | `telegram_id` unique, `username`, `first_name`, `phone`, `is_admin`, `is_banned`, `banned_at`, `notify_telegram` (default true), `consent_at`, `bot_active_conversation_id` (FK conversations, SET NULL), `last_seen_at`, `session_version` (web sessions are valid while it matches the value stored at login), `created_at`. Property `display_name`. |
 | `profiles` | all fields of spec §3, `status`, `moderation_note`, `flagged`, `flag_reason`, `submitted_at`, `approved_at` (NULL while current content is unapproved), `created_at`, `updated_at` |
 | `interests` | `from_user_id`, `to_user_id`, `message`, `status`, `flagged`, `flag_reason`, `created_at`, `decided_at`; unique index on `(LEAST, GREATEST)` of the pair where status in (pending, accepted) |
 | `conversations` | ordered pair `user_a_id < user_b_id` (unique; a side becomes NULL when that user deletes the account), `created_from_interest_id`, `last_message_at`, `closed_at`, `closed_by_id`, `close_reason` (`closed_by_user`/`account_deleted`/`user_banned`). Helpers: `is_open`, `is_participant(uid)`, `partner_id(uid)` (None = deleted) |
 | `messages` | `conversation_id`, `sender_id`, `text`, `origin` (`web`/`telegram`), `created_at`, `read_at`, `flagged`, `flag_reason` |
 | `guardians` | `ward_user_id`, `guardian_user_id` (NULL until accepted), `invite_token` unique, `status` (pending/active/revoked), `expires_at` (invite TTL 7 days), `linked_at`, `revoked_at`; at most one active per ward |
-| `login_tokens` | `token_hash` (SHA-256; raw tokens are never stored), `kind` (login/magic), `user_id`, `expires_at` (10 min), `confirmed_at`, `consumed_at` |
+| `login_tokens` | `token_hash` (SHA-256; raw tokens are never stored), `kind` (login/magic/widget — a used Login Widget signature, kept so it cannot be replayed), `user_id`, `expires_at` (10 min), `confirmed_at`, `consumed_at` |
 | `reports` | `reporter_id`, `target_user_id`, `message_id` (SET NULL), `reason` (ReportReason), `comment`, `status` (open/resolved), `resolution` (ReportAction), `resolved_by_id`, `resolved_at` |
-| `outbox` | `kind`, `payload` JSONB, `created_at`, `next_attempt_at`, `attempts`, `last_error`, `sent_at`, `failed_at` |
+| `outbox` | `kind`, `payload` JSONB, `created_at` (index with `kind`: rate limits), `next_attempt_at`, `attempts`, `last_error`, `sent_at`, `failed_at` |
 
 All user FKs are `ON DELETE CASCADE` (except conversation sides / closer / resolver: `SET NULL`):
 deleting a `users` row wipes the person's data (152-FZ). Enums are stored as VARCHAR values.
@@ -141,10 +148,11 @@ also used when the caller must not learn whether something exists.
 | `set_consent(s, user)` | record consent (first time kept) | — |
 | `set_notify(s, user, enabled)` | Telegram notifications on/off | — |
 | `touch_last_seen(s, user)` | throttled to once a minute | — |
+| `end_web_sessions(s, user)` | raises `session_version`: every site session of the user ends (logout) | — |
 | `is_admin(user) -> bool` | `is_admin` flag or `telegram_id in ADMIN_TELEGRAM_IDS` (sync) | — |
 | `admin_telegram_ids(s) -> list[int]` | who receives moderation notifications | — |
 | `ban(s, user)` | idempotent; cancels pending interests (both directions), closes open conversations (`user_banned`, emits `conversation.closed`), revokes guardian links where the user is ward or guardian; catalog hides banned users; administrators cannot be banned (revoke the rights first) | `AdminBanDenied` |
-| `unban(s, user)` | lifts the ban; nothing is reopened | — |
+| `unban(s, user)` | lifts the ban; nothing is reopened; sessions from before the ban stay ended | — |
 | `delete_account(s, user)` | closes open conversations for partners (`account_deleted`), deletes orphaned conversations, deletes the user row (cascade wipes profile, interests, own messages, guardians, tokens, reports); `expunge_all()` | — |
 
 Admin rights are checked by callers (web `AdminDep`, bot `users.is_admin`), except in
@@ -160,7 +168,8 @@ Admin rights are checked by callers (web `AdminDep`, bot `users.is_admin`), exce
 | `login_token_state(s, token) -> LoginTokenState` | pending/confirmed/consumed/expired (unknown = expired) | — |
 | `create_magic_link(s, user) -> str` | `{SITE_URL}/auth/magic/{token}`, TTL 10 min | `UserBanned` |
 | `consume_magic_token(s, token) -> int \| None` | single use; None if invalid/expired/banned | — |
-| `verify_telegram_widget(data, bot_token, *, max_age=1 day, now=None) -> TelegramWidgetUser \| None` | HMAC-SHA256 per Telegram docs, constant-time compare, `auth_date` ≤ 1 day old; pass exactly Telegram's fields | — |
+| `verify_telegram_widget(data, bot_token, *, max_age=5 min, now=None) -> TelegramWidgetUser \| None` | pure check: HMAC-SHA256 per Telegram docs, constant-time compare, `auth_date` ≤ 5 minutes old; pass exactly Telegram's fields | — |
+| `consume_widget_login(s, data, bot_token, *, now=None) -> TelegramWidgetUser \| None` | `verify_telegram_widget` + single use (the signature is stored hashed as a consumed `widget` token): use this in the route | — |
 | `purge_expired_tokens(s, older_than=1 day) -> int` | housekeeping | — |
 
 `TelegramWidgetUser(telegram_id, username, first_name)`.
@@ -169,13 +178,15 @@ Admin rights are checked by callers (web `AdminDep`, bot `users.is_admin`), exce
 | Function | Semantics | Raises |
 |---|---|---|
 | `create_profile(s, user, data: ProfileCreate) -> Profile` | pending (+`profile.submitted`) or active if `PREMODERATION=false`; flags stop words | `UserBanned`, `ConsentRequired`, `ProfileAlreadyExists` |
-| `update_profile(s, user, data: ProfileUpdate) -> Profile` | applies changed fields; active/rejected/pending → resubmitted (pending + event; active if no premoderation); hidden stays hidden but loses approval | `UserBanned`, `ProfileRequired` |
-| `hide(s, user)` / `show(s, user) -> Profile` | active/pending → hidden; hidden → active (or pending + event if content unapproved) | `ProfileRequired`, `ProfileStateError`, (`show`: `UserBanned`) |
+| `update_profile(s, user, data: ProfileUpdate) -> Profile` | applies changed fields; active/rejected/pending → resubmitted (pending + event; active if no premoderation); hidden stays hidden but loses approval; with premoderation at most `SUBMISSIONS_PER_HOUR` (5) submissions an hour (each is a card for every admin) | `UserBanned`, `ProfileRequired`, `ProfileSubmissionLimitReached` |
+| `hide(s, user)` / `show(s, user) -> Profile` | active/pending → hidden; hidden → active (or pending + event if content unapproved) | `ProfileRequired`, `ProfileStateError`, (`show`: `UserBanned`, `ProfileSubmissionLimitReached`) |
 | `approve(s, user_id) -> Profile` | pending → active, emits `profile.moderated` | `ProfileNotFound`, `ProfileStateError` |
 | `reject(s, user_id, reason) -> Profile` | any non-rejected → rejected with note, emits `profile.moderated` | `InvalidInput`, `ProfileNotFound`, `ProfileStateError` |
 | `get_profile(s, user_id)` / `get_profile_by_user(s, user) -> Profile \| None` | no visibility checks; `user` loaded | — |
-| `get_viewable_profile(s, viewer, user_id) -> Profile` | own profile, catalog-visible profile, or counterpart of a pending/accepted interest or conversation; `user` loaded | `ProfileRequired`, `UserBanned`, `ProfileNotFound` |
+| `get_viewable_profile(s, viewer, user_id) -> Profile` | own profile, catalog-visible profile, or counterpart of a pending/accepted interest or conversation (also when hidden) — but only approved content: an edited (pending) or rejected counterpart raises `ProfileUnderReview` (a `ProfileNotFound` with its own message); `user` loaded | `ProfileRequired`, `UserBanned`, `ProfileNotFound`, `ProfileUnderReview` |
+| `approved_content()` / `has_approved_content(profile)` | SQL / Python check: content a moderator approved (or published without premoderation), not rejected — the only content shown to other people | — |
 | `list_catalog(s, viewer, filters=None, page=1, per_page=20) -> (list[Profile], total)` | ACTIVE, opposite gender, not banned, not the viewer, no report between them in either direction; newest approved first; per_page ≤ 50; `user` loaded | `ProfileRequired`, `UserBanned` |
+| `catalog_position(s, viewer, filters, user_id) -> int \| None` | 1-based position in `list_catalog` order, None if no longer in the catalog (bot «Дальше» continues after the shown card) | `ProfileRequired`, `UserBanned` |
 | `list_pending(s, *, limit, offset) -> list[Profile]` | moderation queue, oldest first | — |
 | `public_counts(s) -> {Gender: int}` | published profiles for the landing page | — |
 
@@ -185,12 +196,12 @@ Pending profiles may browse the catalog but are not shown and cannot send intere
 | Function | Semantics | Raises |
 |---|---|---|
 | `send_interest(s, from_user, to_user_id, message=None) -> Interest` | see rules below; emits `interest.created` | `UserBanned`, `InterestToSelf`, `InvalidInput`, `ProfileNotActive`, `ProfileNotFound`, `InterestAlreadyExists`, `InterestDeclinedBefore`, `InterestLimitReached` |
-| `accept(s, interest_id, user) -> Conversation` | recipient only; creates the conversation; emits `interest.accepted` | `UserBanned`, `InterestNotFound`, `InterestNotPending`, `ProfileNotFound`, `InterestAlreadyExists` |
+| `accept(s, interest_id, user) -> Conversation` | recipient only; the sender's profile must have approved content (a profile taken down by a moderator gains no chat); creates the conversation; emits `interest.accepted` | `UserBanned`, `InterestNotFound`, `InterestNotPending`, `ProfileNotFound`, `InterestAlreadyExists` |
 | `decline(s, interest_id, user) -> Interest` | recipient only; emits `interest.declined` | `UserBanned`, `InterestNotFound`, `InterestNotPending` |
 | `cancel(s, interest_id, user) -> Interest` | sender only, pending only; no event | `InterestNotFound`, `InterestNotPending` |
 | `get_interest(s, interest_id, user) -> Interest` | sender or recipient; both users + profiles loaded | `InterestNotFound` |
 | `get_relation(s, viewer, other_user_id) -> PairRelation` | `.interest` (latest, either direction), `.conversation` — for buttons on `/u/{id}` | — |
-| `list_incoming(s, user, statuses=(PENDING,)) -> list[Interest]` | newest first, banned senders hidden, `from_user.profile` loaded | — |
+| `list_incoming(s, user, statuses=(PENDING,)) -> list[Interest]` | newest first, senders who are banned or whose profile content is not approved are hidden, `from_user.profile` loaded | — |
 | `list_outgoing(s, user, limit=100) -> list[Interest]` | all statuses, `to_user.profile` loaded | — |
 | `pending_incoming_count(s, user) -> int` | badge | — |
 
@@ -206,7 +217,7 @@ message ≤500 chars without contacts; stop words flag the interest.
 |---|---|---|
 | `list_conversations(s, user) -> list[ConversationSummary]` | most recent activity first | — |
 | `get_conversation_for_participant(s, conversation_id, user) -> Conversation` | `user_a`/`user_b` + profiles loaded | `ConversationNotFound` |
-| `send_message(s, conversation_id, sender, text, origin) -> Message` | participant, conversation open, partner exists, sender not banned; stop words flag; emits `message.created` | `UserBanned`, `ConversationNotFound`, `PartnerDeleted`, `ConversationClosed`, `InvalidInput` |
+| `send_message(s, conversation_id, sender, text, origin) -> Message` | participant, conversation open, partner exists, sender not banned, at most `MESSAGES_PER_MINUTE` (20) per sender; stop words flag; emits `message.created` | `UserBanned`, `ConversationNotFound`, `PartnerDeleted`, `ConversationClosed`, `InvalidInput`, `MessageRateLimited` |
 | `list_messages(s, conversation, *, after_id=None, before_id=None, limit=50) -> list[Message]` | ascending; `after_id` = next page after it (resync), else the latest `limit` (before `before_id`) | — |
 | `mark_read(s, conversation, reader) -> int` | marks the partner's messages read | — |
 | `close_conversation(s, conversation, user)` | «Завершить общение»; emits `conversation.closed` | `ConversationNotFound`, `ConversationClosed` |
@@ -225,7 +236,7 @@ conversation clears `bot_active_conversation_id` of users who had it active. Sho
 | `create_invite(s, ward) -> str` | deep link `https://t.me/{BOT_USERNAME}?start=wali_{token}`, TTL 7 days; revokes previous pending invites; current guardian stays until a new one accepts | `UserBanned` |
 | `invite_link(token) -> str`, `get_pending_invite(s, ward) -> Guardian \| None` | re-show the link in settings | — |
 | `get_invite(s, token) -> Guardian \| None` | valid pending invite, `ward` + `ward.profile` loaded (bot confirmation screen) | — |
-| `accept_invite(s, token, guardian_user) -> Guardian` | after explicit confirmation; replaces the previous active guardian; emits `guardian.linked` | `GuardianInviteInvalid`, `GuardianSelf`, `UserBanned` |
+| `accept_invite(s, token, guardian_user) -> Guardian` | after explicit confirmation; replaces the previous active guardian; emits `guardian.linked` (also to the ward's open-chat partners) | `GuardianInviteInvalid`, `GuardianSelf`, `UserBanned` |
 | `revoke(s, ward) -> bool` | disconnect active guardian + cancel pending invites (no event) | — |
 | `get_active_guardian(s, ward_user_id) -> Guardian \| None` | `guardian` (User) loaded | — |
 | `has_active_guardian(s, user_id) -> bool`, `users_with_active_guardian(s, ids) -> set[int]` | badge «👁 Вали подключён — переписка видна вали» | — |
@@ -235,7 +246,7 @@ conversation clears `bot_active_conversation_id` of users who had it active. Sho
 ### moderation
 | Function | Semantics | Raises |
 |---|---|---|
-| `create_report(s, reporter, target_user_id, reason: ReportReason, comment=None, message_id=None) -> Report` | `message_id` must be the target's message in a conversation shared with the reporter; one open report per pair; emits `report.created` | `UserBanned`, `ReportToSelf`, `InvalidInput`, `UserNotFound`, `NotFound`, `AlreadyReported` |
+| `create_report(s, reporter, target_user_id, reason: ReportReason, comment=None, message_id=None) -> Report` | the reporter must have met the target (an interest or a conversation between them, or the target's profile is in the reporter's catalog); `message_id` must be the target's message in a conversation shared with the reporter; one open report per pair; at most `REPORT_DAILY_LIMIT` (5) reports per reporter in 24 h; emits `report.created` | `UserBanned`, `ReportToSelf`, `InvalidInput`, `UserNotFound`, `NotFound`, `AlreadyReported`, `ReportLimitReached` |
 | `get_report(s, report_id)`, `list_reports(s, status=OPEN, *, limit, offset)` | reporter/target (+profiles) and message loaded | — |
 | `resolve_report(s, report_id, admin, action: ReportAction) -> Report` | `dismiss`; `hide_profile` = `profiles.reject` with a standard note; `ban_user` = `users.ban` + resolve all open reports on the target | `PermissionDenied`, `ReportNotFound`, `ReportAlreadyResolved`, `AdminBanDenied` |
 | `list_flagged_messages(s, *, limit, offset) -> list[Message]` | newest first, `sender.profile` loaded | — |
@@ -249,7 +260,8 @@ Flagged content is never blocked.
 |---|---|
 | `emit(s, kind: EventKind, payload, notify_user_ids=()) -> Outbox` | outbox row + `pg_notify('events', json)` in the same transaction (delivered on commit only) |
 | `fetch_pending(s, limit=50) -> list[Outbox]` | due undelivered rows, `FOR UPDATE SKIP LOCKED` (several workers are safe); process them in the same transaction |
-| `mark_sent(s, row)` / `mark_failed(s, row, error, *, max_attempts=8)` | retry backoff 10 s·2ⁿ (≤1 h), then `failed_at` |
+| `mark_sent(s, row)` / `mark_failed(s, row, error, *, max_attempts=8)` | retry backoff 10 s·2ⁿ (≤1 h), then `failed_at` (for failures of one row only, see the worker pattern) |
+| `count_recent(s, kind, within, **payload) -> int` | events of `kind` whose payload contains `payload` in the last `within` (rate limits) |
 | `purge_processed(s, older_than=30 days) -> int` | housekeeping |
 | `EventListener(dsn=None, *, channel="events", ...)` | `await start()/stop()` or `async with`; `async with listener.subscribe() as sub: async for event in sub`; `add_callback(fn)` (sync or async); `wait_connected(timeout)`; reconnects with backoff and then delivers `Event(kind=LISTENER_RECONNECTED)` to subscribers/callbacks |
 
@@ -264,15 +276,15 @@ and must tolerate rows that no longer exist (deleted account → skip and `mark_
 
 | Kind | Payload (besides `user_ids`) | `user_ids` | Telegram delivery (bot worker) |
 |---|---|---|---|
-| `message.created` | `conversation_id, message_id, sender_id, recipient_id, origin, guardians: [{ward_user_id, guardian_user_id}]` | sender, recipient | recipient: «💬 Имя (#id): текст» + «Ответить»; each guardian: copy marked whose conversation it is (re-check `get_active_guardian(ward)` before sending) |
-| `interest.created` | `interest_id, from_user_id, to_user_id` | both | `to_user`: profile card + «✅ Принять» / «❌ Отклонить» |
-| `interest.accepted` | `interest_id, conversation_id, from_user_id, to_user_id` | both | `from_user`: accepted, chat opened |
+| `message.created` | `conversation_id, message_id, sender_id, recipient_id, origin, guardians: [{ward_user_id, guardian_user_id}]` | sender, recipient | recipient (not if the sender was banned meanwhile): «💬 Имя (#id): текст» + «Ответить», with the badge «👁 Вали подключён» when the sender has a wali; each guardian: copy marked whose conversation it is (re-check `get_active_guardian(ward)` before sending) |
+| `interest.created` | `interest_id, from_user_id, to_user_id` | both | `to_user`: profile card + «✅ Принять» / «❌ Отклонить» (skipped if the sender's content is no longer approved) |
+| `interest.accepted` | `interest_id, conversation_id, from_user_id, to_user_id` | both | `from_user`: accepted, chat opened (wali badge if the acceptor has one) |
 | `interest.declined` | `interest_id, from_user_id, to_user_id` | both | `from_user` (gentle wording) |
 | `conversation.closed` | `conversation_id, closed_by_id (null for ban/deletion), reason` | both participants | the other participant(s), text by `reason` |
 | `profile.submitted` | `user_id` | — | admins (`users.admin_telegram_ids`): card + «Одобрить» / «Отклонить»; skip if no longer pending |
 | `profile.moderated` | `user_id, status` (`active`/`rejected`) | owner | owner; on rejection include `profile.moderation_note` |
-| `report.created` | `report_id, reporter_id, target_user_id, message_id` | — | admins, with action buttons |
-| `guardian.linked` | `guardian_id, ward_user_id, guardian_user_id` | ward, guardian | ward: «Вали подключён» |
+| `report.created` | `report_id, reporter_id, target_user_id, message_id` | — | admins, with action buttons (not if the reporter was banned meanwhile) |
+| `guardian.linked` | `guardian_id, ward_user_id, guardian_user_id` | ward, guardian, partners of the ward's open conversations | ward: «Вали подключён»; each partner: «К переписке с Имя (#id) подключён вали…» (an open chat page shows the notice at once: SSE `wali`) |
 
 Telegram delivery honours `users.notify_telegram` and skips banned/deleted recipients. Guardian
 copies are the purpose of the wali link and are sent regardless of the guardian's
@@ -284,11 +296,17 @@ Outbox worker pattern (bot): wake on every `EventListener` event and at least ev
 async with session_scope() as session:
     for row in await events.fetch_pending(session, limit=20):
         try:
-            await deliver(row)            # loads data by IDs, sends via aiogram Bot
+            await deliver(row)  # loads data by IDs, sends via aiogram Bot
+        except TELEGRAM_UNAVAILABLE:  # network, 5xx, persistent flood control
+            break  # row untouched; the worker pauses 5 s … 5 min
+        except Exception as exc:  # a failure of this row only
+            await events.mark_failed(session, row, type(exc).__name__)
+        else:
             await events.mark_sent(session, row)
-        except TelegramRetryAfter / network errors as exc:
-            await events.mark_failed(session, row, repr(exc))
 ```
+
+An outage never counts attempts (it would give up wali copies after ~21 minutes) and stopping the
+batch keeps the order of messages. Logs carry no message texts or SQL parameters (`exc_summary`).
 
 Delivery is at-least-once. Housekeeping (e.g. daily from the bot process):
 `events.purge_processed`, `auth.purge_expired_tokens`.
@@ -307,8 +325,15 @@ browser to resync (it re-fetches `list_messages(after_id=…)`).
   touches `last_seen_at`); `LoginDep` (any logged-in user, incl. banned — logout, delete account);
   `UserDep` (logged in, not banned → else redirect to `/login?next=…` / 403); `ProfileUserDep`
   (also has a profile → else redirect `/profile/new`); `AdminDep` (403 unless `users.is_admin`).
-- Sessions: `login_user(request, user)` (clears the session first: no fixation; rotates CSRF),
-  `logout_user(request)`; `safe_next_url(next)` against open redirects.
+- Sessions: `login_user(request, user)` (clears the session first: no fixation; rotates CSRF;
+  stores `users.session_version`), `logout_user(request)` (this browser);
+  `current_user` ends a session whose version no longer matches. `POST /logout` also calls
+  `users.end_web_sessions`: logging out ends the session on every device (copied cookies too).
+  `safe_next_url(next)` against open redirects.
+- Ids in URLs use `IdPath` (1 … 2⁶³−1): larger numbers are a 400 page, not a database error.
+- Unhandled errors: `UnhandledErrorMiddleware` answers the styled 500 page and logs only
+  `exc_summary` (the engine also has `hide_parameters=True`). `/auth/*` query strings and magic
+  tokens are removed from uvicorn's access log (`security.AccessLogRedaction`).
 - CSRF: every POST/PUT/PATCH/DELETE needs the session token in form field `csrf_token` or header
   `X-CSRF-Token`; templates: `<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">`,
   HTMX: `hx-headers='{"X-CSRF-Token": "{{ csrf_token() }}"}'` on `<body>`.
@@ -318,8 +343,8 @@ browser to resync (it re-fetches `list_messages(after_id=…)`).
 - Login flows: `/login` creates `auth.create_login_token`, keeps the raw token in the session,
   shows `auth.login_deep_link(token)` and polls (`poll_login_token` / `login_token_state`).
   Magic links: the bot should send them as an inline URL button (no link preview that could consume
-  the single-use token). Widget: pass only Telegram's query fields to `verify_telegram_widget`,
-  then `users.get_or_create_by_telegram`.
+  the single-use token). Widget: pass only Telegram's query fields to `auth.consume_widget_login`
+  (single use, 5 minutes), then `users.get_or_create_by_telegram`.
 - Mark catalog/profile pages `noindex` (meta + `robots.txt`); keep everything self-hosted (no CDN).
 
 ## 10. Tests
@@ -375,4 +400,14 @@ revision (coordinate: one migration head).
 10. Wali invites expire after 7 days; a wali cannot be one's own wali.
 11. Editing a profile always goes back to moderation when `PREMODERATION` is on (including
     re-submission of a pending one, so admins see the latest content).
-12. Profiles with stop words are flagged (not blocked), like messages and interests.
+12. Profiles with stop words are flagged (not blocked), like messages and interests; an admin can
+    take down a published one from `/admin/flagged` or `/admin/users/{id}`.
+13. Other people only ever see approved profile content: an edited (pending) or rejected profile is
+    hidden from interest and chat counterparts too, and its pending interests cannot be accepted
+    until it is approved again.
+14. Flood limits on actions that reach the admins or the shared delivery queue: 5 reports a day
+    (only about people one has met), 5 profile submissions an hour, 20 chat messages a minute.
+15. Logging out of the site ends all of the person's site sessions (stateless cookies + version).
+16. In the bot, a Telegram «Reply» goes to the chat of the replied message, ending an open dialog;
+    a reply to a wali copy, an interest or profile card is refused with a hint (never sent to the
+    active chat). Editing a profile in the bot asks which field to change.

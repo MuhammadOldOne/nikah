@@ -1,5 +1,7 @@
 // Chat page: live messages (SSE events from app.js -> fetch the HTML partial after the last id),
-// sending with Enter (Shift+Enter for a new line), loading older messages, marking as read.
+// sending with Enter on a physical keyboard (Shift+Enter for a new line; on touch screens Enter is
+// a new line and the button sends), loading older messages, marking as read, announcing the
+// partner's new messages to screen readers.
 (function () {
   "use strict";
 
@@ -10,6 +12,8 @@
   var textarea = form ? form.querySelector("textarea") : null;
   var messagesUrl = chat.dataset.messagesUrl;
   var lastId = parseInt(chat.dataset.lastId || "0", 10);
+  var announcer = document.getElementById("chat-announcer");
+  var physicalKeyboard = window.matchMedia("(pointer: fine)");
   var fetching = false;
   var again = false;
   var PARTIAL = { "HX-Request": "true" };
@@ -27,13 +31,18 @@
     var template = document.createElement("template");
     template.innerHTML = html;
     var added = false;
+    var heard = [];
     template.content.querySelectorAll("li.msg").forEach(function (item) {
       var id = parseInt(item.dataset.id, 10);
       if (document.getElementById("msg-" + id)) return;
+      if (!item.classList.contains("msg--mine")) {
+        heard.push(chat.dataset.partner + ": " + item.querySelector(".msg__bubble").textContent);
+      }
       list.appendChild(item);
       lastId = Math.max(lastId, id);
       added = true;
     });
+    if (heard.length && announcer) announcer.textContent = "Новое сообщение. " + heard.join(" ");
     if (added) {
       var empty = document.getElementById("messages-empty");
       if (empty) empty.remove();
@@ -73,6 +82,11 @@
     if (!id || !document.getElementById("msg-" + id)) fetchNew();
   });
   document.addEventListener("live:closed", function () { window.location.reload(); });
+  // A participant linked a wali: from now on the conversation is copied to them.
+  document.addEventListener("live:wali", function () {
+    var notice = document.getElementById("wali-notice");
+    if (notice) notice.hidden = false;
+  });
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "visible") fetchNew();
   });
@@ -118,7 +132,7 @@
     var sending = false;
     textarea.addEventListener("input", autosize);
     textarea.addEventListener("keydown", function (event) {
-      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing && physicalKeyboard.matches) {
         event.preventDefault();
         form.requestSubmit();
       }

@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from app.schemas import CatalogFilters, humanize_errors
 from app.services import guardians, profiles
-from app.web.deps import ProfileUserDep, SessionDep, is_partial
+from app.web.deps import ProfileUserDep, RedirectTo, SessionDep, is_partial
 from app.web.render import render, render_partial
 
 router = APIRouter()
@@ -59,6 +59,9 @@ async def catalog(request: Request, session: SessionDep, user: ProfileUserDep) -
     items, total = await profiles.list_catalog(session, user, filters, page=page, per_page=PER_PAGE)
     pages = max(math.ceil(total / PER_PAGE), 1)
     active = {name: params[name].strip() for name in FILTER_FIELDS if params.get(name, "").strip()}
+    if page > pages:  # e.g. an old ?page=N after profiles left: go to the last page, same filters
+        last = {**active, "page": str(pages)} if pages > 1 else active
+        raise RedirectTo(f"/catalog?{urlencode(last)}" if last else "/catalog")
     context: dict[str, Any] = {
         "items": items,
         "total": total,

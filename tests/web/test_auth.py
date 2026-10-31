@@ -5,6 +5,8 @@ import hmac
 import re
 import time
 
+import httpx
+
 from app.enums import LoginTokenState
 from app.services import auth, users
 from tests.web.conftest import csrf_of
@@ -146,6 +148,21 @@ async def test_telegram_widget_callback(client, session, override_settings, sett
     assert user is not None and user.username == "yusuf"
 
 
+async def test_telegram_widget_url_cannot_be_replayed(client, override_settings, settings):
+    override_settings(TELEGRAM_WIDGET_ENABLED=True)
+    query = _widget_query(556, settings.TELEGRAM_TOKEN.get_secret_value())
+    assert (await client.get("/auth/telegram", params=query)).headers["location"] == "/profile/new"
+    await client.post("/logout", data={"csrf_token": await csrf_of(client, "/profile/new")})
+
+    client.cookies.clear()  # e.g. someone opening the URL from the browser history
+    replay = await client.get("/auth/telegram", params=query)
+    assert replay.headers["location"] == "/login"
+    assert (await client.get("/settings")).status_code == 303
+
+    stale = _widget_query(557, settings.TELEGRAM_TOKEN.get_secret_value(), auth_date=str(int(time.time()) - 600))
+    assert (await client.get("/auth/telegram", params=stale)).headers["location"] == "/login"
+
+
 async def test_widget_is_not_on_login_page_by_default(client):
     response = await client.get("/login")
     assert "telegram-widget.js" not in response.text
@@ -159,6 +176,31 @@ async def test_logout_clears_session(client, dev_login, make_profile):
     response = await client.post("/logout", data={"csrf_token": csrf})
     assert response.status_code == 303 and response.headers["location"] == "/"
     assert (await client.get("/me")).status_code == 303
+
+
+async def test_logout_ends_the_session_on_every_device(client, app, dev_login, make_profile):
+    profile = await make_profile()
+    await dev_login(client, profile.user)
+    copied = dict(client.cookies)  # the same session in another browser (a relative's phone)
+    await client.post("/logout", data={"csrf_token": await csrf_of(client)})
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as other:
+        other.cookies.update(copied)
+        assert (await other.get("/settings")).status_code == 303
+    await dev_login(client, profile.user)  # logging in again works
+    assert (await client.get("/settings")).status_code == 200
+
+
+async def test_unban_does_not_revive_old_sessions(client, dev_login, session, make_profile):
+    profile = await make_profile()
+    await dev_login(client, profile.user)
+    copied = dict(client.cookies)
+    user = await users.get_by_id(session, profile.user_id)
+    await users.ban(session, user)
+    await users.unban(session, user)
+    await session.commit()
+    client.cookies.update(copied)
+    assert (await client.get("/settings")).status_code == 303
 
 
 async def test_logout_requires_csrf(client, dev_login, make_profile):

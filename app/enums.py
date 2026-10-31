@@ -112,6 +112,7 @@ class GuardianStatus(StrEnum):
 class LoginTokenKind(StrEnum):
     LOGIN = "login"  # deep link t.me/<bot>?start=login_<token>, confirmed in the bot, polled by the site
     MAGIC = "magic"  # one-time link {SITE_URL}/auth/magic/<token> issued by the bot
+    WIDGET = "widget"  # a used Telegram Login Widget signature (kept so it cannot be replayed)
 
 
 class LoginTokenState(StrEnum):
@@ -223,6 +224,7 @@ _LABELS: dict[type[StrEnum], dict[StrEnum, str | GenderedLabel]] = {
     LoginTokenKind: {
         LoginTokenKind.LOGIN: "вход через бота",
         LoginTokenKind.MAGIC: "ссылка из бота",
+        LoginTokenKind.WIDGET: "виджет Telegram",
     },
     LoginTokenState: {
         LoginTokenState.PENDING: "ожидает подтверждения",

@@ -26,6 +26,8 @@ def get_engine() -> AsyncEngine:
     if _engine is None:
         _engine = create_async_engine(
             get_settings().DATABASE_URL,
+            # Error messages must not carry bound values: they are personal data (profiles, chats).
+            hide_parameters=True,
             pool_pre_ping=True,
             pool_size=10,
             max_overflow=10,

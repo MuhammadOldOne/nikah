@@ -17,6 +17,7 @@ from app.enums import GuardianStatus
 from app.models import Guardian, User
 from app.services import events
 from app.services.errors import GuardianInviteInvalid, GuardianSelf, UserBanned
+from app.services.relations import open_conversation_partner_ids
 
 INVITE_TTL = timedelta(days=7)
 INVITE_PREFIX = "wali_"
@@ -98,11 +99,14 @@ async def accept_invite(session: AsyncSession, token: str, guardian_user: User) 
     invite.guardian_user_id = guardian_user.id
     invite.linked_at = now
     await session.flush()
+    # The ward's chat partners are told at once (open chat pages and the bot): from now on their
+    # messages are copied to the wali.
+    partners = await open_conversation_partner_ids(session, invite.ward_user_id)
     await events.emit(
         session,
         events.EventKind.GUARDIAN_LINKED,
         {"guardian_id": invite.id, "ward_user_id": invite.ward_user_id, "guardian_user_id": guardian_user.id},
-        notify_user_ids=[invite.ward_user_id, guardian_user.id],
+        notify_user_ids=[invite.ward_user_id, guardian_user.id, *partners],
     )
     return invite
 

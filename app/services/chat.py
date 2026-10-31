@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 
 from pydantic import ValidationError
 from sqlalchemy import ColumnElement, func, or_, select, update
@@ -21,6 +22,7 @@ from app.services.errors import (
     ConversationClosed,
     ConversationNotFound,
     InvalidInput,
+    MessageRateLimited,
     PartnerDeleted,
     UserBanned,
 )
@@ -28,6 +30,10 @@ from app.services.stopwords import flag_reason
 
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
+# Per sender, across chats: generous for people, a brake on floods (each message is a Telegram
+# notification, and the delivery queue is shared by everyone).
+MESSAGES_PER_MINUTE = 20
+MESSAGE_RATE_WINDOW = timedelta(minutes=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +166,13 @@ async def send_message(
         clean = ChatMessageIn(text=text).text
     except ValidationError as exc:
         raise InvalidInput(first_error(exc)) from exc
+    sent_recently = await session.scalar(
+        select(func.count())
+        .select_from(Message)
+        .where(Message.sender_id == sender.id, Message.created_at > func.now() - MESSAGE_RATE_WINDOW)
+    )
+    if (sent_recently or 0) >= MESSAGES_PER_MINUTE:
+        raise MessageRateLimited()
 
     reason = flag_reason(clean)
     message = Message(
@@ -240,13 +253,16 @@ async def force_close(
     closed_by_id: int | None = None,
 ) -> None:
     """Internal: close without permission checks (used for user actions, bans and deletions)."""
+    # Lock order: users rows before the conversation row, as when a message is sent (the bot and
+    # the site update the sender's last_seen_at first). Changing the conversation first would let
+    # autoflush lock it before the users rows, and a reply sent at the same moment would deadlock.
+    await session.execute(
+        update(User).where(User.bot_active_conversation_id == conversation.id).values(bot_active_conversation_id=None)
+    )
     conversation.closed_at = utcnow()
     conversation.closed_by_id = closed_by_id
     conversation.close_reason = reason
     participants = [uid for uid in (conversation.user_a_id, conversation.user_b_id) if uid is not None]
-    await session.execute(
-        update(User).where(User.bot_active_conversation_id == conversation.id).values(bot_active_conversation_id=None)
-    )
     await session.flush()
     await events.emit(
         session,

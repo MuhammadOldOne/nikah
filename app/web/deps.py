@@ -17,7 +17,7 @@ import secrets
 from typing import Annotated
 from urllib.parse import quote
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Path, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
@@ -25,11 +25,16 @@ from app.models import User
 from app.services import users
 
 SESSION_USER_KEY = "uid"
+SESSION_VERSION_KEY = "sv"  # users.session_version at login; a mismatch ends the session
 SESSION_CSRF_KEY = "csrf"
 SESSION_FLASH_KEY = "flash"
 CSRF_FORM_FIELD = "csrf_token"
 CSRF_HEADER = "X-CSRF-Token"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+DB_ID_MAX = 2**63 - 1  # ids are BIGINT: larger numbers are a bad request, not a database error
+
+# Ids in URLs (``/u/{user_id:int}`` etc.): out-of-range values get the 400 page.
+IdPath = Annotated[int, Path(ge=1, le=DB_ID_MAX)]
 
 # scope="function": the session commits right after the endpoint returns, before the response is
 # sent, so a redirect never reaches the browser before its data is committed. Always use this alias
@@ -67,13 +72,17 @@ def login_redirect_url(request: Request) -> str:
 
 
 async def current_user(request: Request, session: SessionDep) -> User | None:
-    """The logged-in user (``profile`` loaded) or None. Also refreshes ``last_seen_at``."""
+    """The logged-in user (``profile`` loaded) or None. Also refreshes ``last_seen_at``.
+
+    The session is signed but stored only in the browser; it stays valid while the user's
+    ``session_version`` is the one recorded at login (logout everywhere and bans raise it).
+    """
     user_id = request.session.get(SESSION_USER_KEY)
     if not isinstance(user_id, int):
         return None
     user = await users.get_by_id(session, user_id)
-    if user is None:  # account deleted
-        request.session.clear()
+    if user is None or request.session.get(SESSION_VERSION_KEY, 0) != user.session_version:
+        request.session.clear()  # account deleted or the session was ended on the server
         return None
     await users.touch_last_seen(session, user)
     return user
@@ -164,7 +173,9 @@ def login_user(request: Request, user: User) -> None:
     """Start a fresh session for ``user`` (clears old data: prevents session fixation)."""
     request.session.clear()
     request.session[SESSION_USER_KEY] = user.id
+    request.session[SESSION_VERSION_KEY] = user.session_version
 
 
 def logout_user(request: Request) -> None:
+    """Forget the session in this browser (``users.end_web_sessions`` ends it everywhere)."""
     request.session.clear()

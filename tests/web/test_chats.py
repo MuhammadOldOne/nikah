@@ -137,12 +137,14 @@ async def test_report_from_chat(client, dev_login, couple, session):
 
 async def test_wali_banner_and_deleted_partner(client, dev_login, couple, make_profile, session):
     man, woman, conversation = couple
+    await dev_login(client, man)
+    assert 'id="wali-notice" role="status" hidden>' in (await client.get(f"/chats/{conversation.id}")).text
     wali = await make_profile(gender=Gender.MALE)
     link = await guardians.create_invite(session, woman)
     await guardians.accept_invite(session, link.rsplit("wali_", 1)[1], wali.user)
     await session.commit()
-    await dev_login(client, man)
-    assert "Вали подключён — переписка видна вали" in (await client.get(f"/chats/{conversation.id}")).text
+    page = (await client.get(f"/chats/{conversation.id}")).text
+    assert 'id="wali-notice" role="status"><span>👁 Вали подключён — переписка видна вали.' in page
 
     await users.delete_account(session, woman)
     await session.commit()
@@ -229,6 +231,20 @@ async def test_chat_stream_delivers_new_messages(app, running_broker, couple, se
         disconnected.set()
         await asyncio.wait_for(task, 5)
     assert running_broker.subscriber_count == 0
+
+
+async def test_open_chat_of_the_partner_learns_about_a_new_wali(app, running_broker, couple, make_user, session):
+    man, woman, conversation = couple
+    task, chunks, disconnected, _ = await _open_stream(app, f"/chats/{conversation.id}/stream", man.id)
+    try:
+        await _read_until(chunks, "event: ready")
+        link = await guardians.create_invite(session, woman)
+        await guardians.accept_invite(session, link.rsplit("wali_", 1)[1], await make_user())
+        await session.commit()
+        assert "event: wali" in await _read_until(chunks, "event: wali")
+    finally:
+        disconnected.set()
+        await asyncio.wait_for(task, 5)
 
 
 async def test_events_stream_sends_badge_updates(app, running_broker, make_pair, session):

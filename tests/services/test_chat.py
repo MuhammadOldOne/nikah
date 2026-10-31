@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from sqlalchemy import select
 
@@ -191,3 +193,42 @@ async def test_set_bot_active_conversation(session, make_pair, make_conversation
     await chat.close_conversation(session, conversation, woman)
     with pytest.raises(ConversationClosed):
         await chat.set_bot_active_conversation(session, man, conversation.id)
+
+
+async def test_closing_while_the_partner_replies_from_the_bot_does_not_deadlock(session, make_pair, make_conversation):
+    """The bot locks the sender's users row (last_seen_at) and then the conversation; closing locks
+    the users rows of the chat's active bot users and then the conversation — same order."""
+    from app.db import get_sessionmaker
+
+    man, woman = await make_pair()
+    conversation = await make_conversation(man, woman)
+    await chat.set_bot_active_conversation(session, woman, conversation.id)
+    woman.last_seen_at = None
+    await session.commit()
+
+    async with get_sessionmaker()() as bot_side, get_sessionmaker()() as site_side:
+        sender = await users.get_by_id(bot_side, woman.id)
+        await users.touch_last_seen(bot_side, sender)  # the bot's update now holds her users row
+        closer = await users.get_by_id(site_side, man.id)
+        to_close = await chat.get_conversation_for_participant(site_side, conversation.id, closer)
+        closing = asyncio.create_task(chat.close_conversation(site_side, to_close, closer))
+        await asyncio.sleep(0.3)  # the site waits for her users row
+        await chat.send_message(bot_side, conversation.id, sender, "Салам", MessageOrigin.TELEGRAM)
+        await bot_side.commit()
+        await closing
+        await site_side.commit()
+
+    await session.refresh(conversation)
+    assert conversation.closed_at is not None
+
+
+async def test_messages_per_minute_are_limited(session, make_pair, make_conversation):
+    from app.services.errors import MessageRateLimited
+
+    man, woman = await make_pair()
+    conversation = await make_conversation(man, woman)
+    for number in range(chat.MESSAGES_PER_MINUTE):
+        await chat.send_message(session, conversation.id, man, f"Сообщение {number}", MessageOrigin.WEB)
+    with pytest.raises(MessageRateLimited):
+        await chat.send_message(session, conversation.id, man, "Ещё одно", MessageOrigin.TELEGRAM)
+    await chat.send_message(session, conversation.id, woman, "Отвечаю", MessageOrigin.WEB)  # per sender

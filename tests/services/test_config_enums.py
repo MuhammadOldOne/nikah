@@ -33,6 +33,15 @@ def test_prod_requires_a_real_secret_key():
     assert make_settings(ENV="dev", SECRET_KEY="").SECRET_KEY.get_secret_value() == DEV_SECRET_KEY
 
 
+def test_public_dev_key_is_refused_for_a_real_site():
+    # A production .env without ENV (dev is the default) and without SECRET_KEY must not start.
+    with pytest.raises(ValidationError, match="development SECRET_KEY"):
+        make_settings(SITE_URL="https://istina.example", SECRET_KEY="")
+    assert (
+        make_settings(SITE_URL="http://localhost:8000", SECRET_KEY="").SECRET_KEY.get_secret_value() == DEV_SECRET_KEY
+    )
+
+
 def test_dev_login_only_effective_in_dev_and_secure_cookie_default():
     prod = make_settings(ENV="prod", SECRET_KEY=PROD_SECRET, DEV_LOGIN_ENABLED=True, SESSION_COOKIE_SECURE=None)
     assert prod.DEV_LOGIN_ENABLED is False
@@ -43,7 +52,9 @@ def test_dev_login_only_effective_in_dev_and_secure_cookie_default():
 
 
 def test_defaults_and_normalization():
-    settings = make_settings(SITE_URL="https://istina.example/", BOT_USERNAME="@nikah_istina_bot")
+    settings = make_settings(
+        SITE_URL="https://istina.example/", BOT_USERNAME="@nikah_istina_bot", SECRET_KEY=PROD_SECRET
+    )
     assert settings.SITE_URL == "https://istina.example"
     assert settings.BOT_USERNAME == "nikah_istina_bot"
     assert settings.PREMODERATION is True

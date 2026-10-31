@@ -14,7 +14,7 @@ from app.schemas import CHAT_MESSAGE_MAX, REPORT_COMMENT_MAX
 from app.services import chat, guardians
 from app.services.errors import ConversationNotFound, DomainError
 from app.services.events import Event, EventKind
-from app.web.deps import SessionDep, UserDep, flash, is_partial
+from app.web.deps import DB_ID_MAX, IdPath, SessionDep, UserDep, flash, is_partial
 from app.web.render import render, render_partial, toast_response
 from app.web.reports import submit_report
 from app.web.sse import sse_response
@@ -53,7 +53,7 @@ async def chat_list(request: Request, session: SessionDep, user: UserDep) -> Res
 
 
 @router.get("/chats/{conversation_id:int}")
-async def chat_page(request: Request, session: SessionDep, user: UserDep, conversation_id: int) -> Response:
+async def chat_page(request: Request, session: SessionDep, user: UserDep, conversation_id: IdPath) -> Response:
     conversation = await _conversation(session, conversation_id, user)
     messages = await chat.list_messages(session, conversation, limit=PAGE_SIZE)
     await chat.mark_read(session, conversation, user)
@@ -82,9 +82,9 @@ async def messages_partial(
     request: Request,
     session: SessionDep,
     user: UserDep,
-    conversation_id: int,
-    after_id: Annotated[int | None, Query(ge=0)] = None,
-    before_id: Annotated[int | None, Query(ge=1)] = None,
+    conversation_id: IdPath,
+    after_id: Annotated[int | None, Query(ge=0, le=DB_ID_MAX)] = None,
+    before_id: Annotated[int | None, Query(ge=1, le=DB_ID_MAX)] = None,
     read: bool = False,
 ) -> Response:
     """New messages after ``after_id`` (live updates, resync) or older ones before ``before_id``."""
@@ -100,7 +100,7 @@ async def messages_partial(
 
 
 @router.post("/chats/{conversation_id:int}/messages")
-async def send_message(request: Request, session: SessionDep, user: UserDep, conversation_id: int) -> Response:
+async def send_message(request: Request, session: SessionDep, user: UserDep, conversation_id: IdPath) -> Response:
     form = await request.form()
     text = form.get("text")
     try:
@@ -117,7 +117,7 @@ async def send_message(request: Request, session: SessionDep, user: UserDep, con
     if not is_partial(request):
         return _back_to_chat(conversation_id)
     try:
-        after_id = max(int(str(form.get("after_id") or 0)), 0)
+        after_id = min(max(int(str(form.get("after_id") or 0)), 0), DB_ID_MAX)
     except ValueError:
         after_id = 0
     conversation = await _conversation(session, conversation_id, user)
@@ -126,7 +126,7 @@ async def send_message(request: Request, session: SessionDep, user: UserDep, con
 
 
 @router.post("/chats/{conversation_id:int}/close")
-async def close(request: Request, session: SessionDep, user: UserDep, conversation_id: int) -> Response:
+async def close(request: Request, session: SessionDep, user: UserDep, conversation_id: IdPath) -> Response:
     conversation = await _conversation(session, conversation_id, user)
     try:
         await chat.close_conversation(session, conversation, user)
@@ -138,7 +138,7 @@ async def close(request: Request, session: SessionDep, user: UserDep, conversati
 
 
 @router.post("/chats/{conversation_id:int}/report")
-async def report(request: Request, session: SessionDep, user: UserDep, conversation_id: int) -> Response:
+async def report(request: Request, session: SessionDep, user: UserDep, conversation_id: IdPath) -> Response:
     conversation = await _conversation(session, conversation_id, user)
     partner_id = conversation.partner_id(user.id)
     if partner_id is None:
@@ -149,9 +149,11 @@ async def report(request: Request, session: SessionDep, user: UserDep, conversat
 
 
 @router.get("/chats/{conversation_id:int}/stream")
-async def stream(request: Request, session: SessionDep, user: UserDep, conversation_id: int) -> StreamingResponse:
-    """SSE for an open chat page: ``message`` / ``closed`` for this chat, ``badge`` for the rest."""
-    await _conversation(session, conversation_id, user)
+async def stream(request: Request, session: SessionDep, user: UserDep, conversation_id: IdPath) -> StreamingResponse:
+    """SSE for an open chat page: ``message`` / ``closed`` for this chat, ``wali`` when one of its
+    participants links a wali (the page shows the notice at once), ``badge`` for the rest."""
+    conversation = await _conversation(session, conversation_id, user)
+    participants = {conversation.user_a_id, conversation.user_b_id} - {None}
 
     def classify(event: Event) -> tuple[str, dict[str, Any]] | None:
         if event.data.get("conversation_id") == conversation_id:
@@ -159,6 +161,8 @@ async def stream(request: Request, session: SessionDep, user: UserDep, conversat
                 return "message", {"id": event.data.get("message_id")}
             if event.kind == EventKind.CONVERSATION_CLOSED:
                 return "closed", {}
+        if event.kind == EventKind.GUARDIAN_LINKED and event.data.get("ward_user_id") in participants:
+            return "wali", {}
         return "badge", {}
 
     return sse_response(request, user.id, classify)

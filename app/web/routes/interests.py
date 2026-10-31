@@ -12,7 +12,7 @@ from fastapi.responses import RedirectResponse, Response
 
 from app.services import guardians, interests
 from app.services.errors import DomainError
-from app.web.deps import SessionDep, UserDep, flash, is_partial, safe_next_url
+from app.web.deps import IdPath, SessionDep, UserDep, flash, is_partial, safe_next_url
 from app.web.render import redirect, render, render_partial, toast_response
 
 router = APIRouter()
@@ -58,7 +58,7 @@ def _error(request: Request, exc: DomainError) -> Response:
 
 
 @router.post("/interests/{interest_id:int}/accept")
-async def accept(request: Request, session: SessionDep, user: UserDep, interest_id: int) -> Response:
+async def accept(request: Request, session: SessionDep, user: UserDep, interest_id: IdPath) -> Response:
     try:
         conversation = await interests.accept(session, interest_id, user)
     except DomainError as exc:
@@ -68,7 +68,7 @@ async def accept(request: Request, session: SessionDep, user: UserDep, interest_
 
 
 @router.post("/interests/{interest_id:int}/decline")
-async def decline(request: Request, session: SessionDep, user: UserDep, interest_id: int) -> Response:
+async def decline(request: Request, session: SessionDep, user: UserDep, interest_id: IdPath) -> Response:
     try:
         await interests.decline(session, interest_id, user)
     except DomainError as exc:
@@ -79,7 +79,7 @@ async def decline(request: Request, session: SessionDep, user: UserDep, interest
 
 
 @router.post("/interests/{interest_id:int}/cancel")
-async def cancel(request: Request, session: SessionDep, user: UserDep, interest_id: int) -> Response:
+async def cancel(request: Request, session: SessionDep, user: UserDep, interest_id: IdPath) -> Response:
     try:
         await interests.cancel(session, interest_id, user)
     except DomainError as exc:

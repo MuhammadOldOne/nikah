@@ -68,8 +68,9 @@
           {{ m.csrf_field() }}
           <div class="field">
             <label for="interest-message">Сообщение <span class="muted">(необязательно)</span></label>
-            <textarea class="textarea" id="interest-message" name="message" rows="4" maxlength="{{ message_max }}" data-counter="{{ message_max }}" placeholder="Ассаляму алейкум! Коротко о себе и почему откликаетесь…" aria-describedby="interest-hint"></textarea>
+            <textarea class="textarea" id="interest-message" name="message" rows="4" maxlength="{{ message_max }}" data-counter="{{ message_max }}" placeholder="Ассаляму алейкум! Коротко о себе и почему откликаетесь…" aria-describedby="interest-hint{% if interest_error %} interest-error{% endif %}"{% if interest_error %} aria-invalid="true"{% endif %}>{{ interest_draft or '' }}</textarea>
             <p class="hint" id="interest-hint">Без контактов: обменяться ими можно в чате, когда отклик примут.</p>
+            {% if interest_error %}<p class="field-error" id="interest-error" role="alert">{{ interest_error }}</p>{% endif %}
           </div>
           <button class="btn btn-primary btn-block btn-lg" type="submit">{{ m.icon('heart') }} Откликнуться</button>
         </form>

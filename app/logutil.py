@@ -1,4 +1,4 @@
-"""Logging without personal data."""
+"""Logging without personal data (shared by the website and the bot)."""
 
 from __future__ import annotations
 

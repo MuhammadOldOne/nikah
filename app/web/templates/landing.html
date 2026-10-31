@@ -66,7 +66,7 @@
         <li class="card step">
           <span class="step__num" aria-hidden="true">1</span>
           <h3>Анкета</h3>
-          <p>Короткая анкета без фото: обязательных полей минимум, около двух минут. Модератор проверит её перед публикацией.</p>
+          <p>Короткая анкета без фото: обязательных полей минимум, около двух минут.{% if settings.PREMODERATION %} Модератор проверит её перед публикацией.{% endif %}</p>
         </li>
         <li class="card step">
           <span class="step__num" aria-hidden="true">2</span>
@@ -107,7 +107,7 @@
         <article class="card principle">
           <div class="principle__icon">{{ m.icon('shield') }}</div>
           <h3>Модерация</h3>
-          <p>Каждая анкета проверяется. Жалобы рассматриваются, просьбы о деньгах и мошенничество — повод для блокировки.</p>
+          <p>{% if settings.PREMODERATION %}Каждая анкета проверяется перед публикацией.{% else %}Модератор рассматривает жалобы и анкеты с подозрительными словами.{% endif %} Просьбы о деньгах и мошенничество — повод для блокировки.</p>
         </article>
         <article class="card principle">
           <div class="principle__icon">{{ m.icon('database') }}</div>

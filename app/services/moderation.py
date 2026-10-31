@@ -2,23 +2,27 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from pydantic import ValidationError
-from sqlalchemy import exists, select, update
+from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.interfaces import LoaderOption
 
 from app.clock import utcnow
 from app.enums import ProfileStatus, ReportAction, ReportReason, ReportStatus
-from app.models import Conversation, Message, Report, User
+from app.models import Conversation, Interest, Message, Report, User
 from app.schemas import ReportIn, first_error
 from app.services import events, profiles, users
 from app.services.errors import (
     AlreadyReported,
+    DomainError,
     InvalidInput,
     NotFound,
     PermissionDenied,
     ReportAlreadyResolved,
+    ReportLimitReached,
     ReportNotFound,
     ReportToSelf,
     UserBanned,
@@ -35,6 +39,9 @@ __all__ = [
     "resolve_report",
 ]
 
+# Every report is sent to every admin in Telegram.
+REPORT_DAILY_LIMIT = 5
+REPORT_LIMIT_WINDOW = timedelta(hours=24)
 HIDE_PROFILE_NOTE = "Анкета скрыта модератором по жалобе. Исправьте анкету, и она снова уйдёт на проверку."
 
 
@@ -48,7 +55,10 @@ async def create_report(
 ) -> Report:
     """Report a user (optionally a specific message of theirs from a shared conversation).
 
-    One open report per reporter/target pair. Reported users disappear from each other's catalog.
+    Only someone the reporter has met on the platform can be reported: a profile they can see in
+    the catalog, or a person they have exchanged an interest or a chat with. One open report per
+    reporter/target pair, at most REPORT_DAILY_LIMIT reports per reporter in 24 hours.
+    Reported users disappear from each other's catalog.
     """
     if reporter.is_banned:
         raise UserBanned()
@@ -58,8 +68,17 @@ async def create_report(
         data = ReportIn(reason=reason, comment=comment)
     except ValidationError as exc:
         raise InvalidInput(first_error(exc)) from exc
+    # Serialize reports per reporter so the daily limit cannot be raced (see interests.send_interest).
+    await session.execute(select(User.id).where(User.id == reporter.id).with_for_update(key_share=True))
     if await session.get(User, target_user_id) is None:
         raise UserNotFound()
+    duplicate = exists().where(
+        Report.reporter_id == reporter.id,
+        Report.target_user_id == target_user_id,
+        Report.status == ReportStatus.OPEN,
+    )
+    if await session.scalar(select(duplicate)):
+        raise AlreadyReported()
     if message_id is not None:
         message = await session.get(Message, message_id)
         conversation = await session.get(Conversation, message.conversation_id) if message else None
@@ -70,13 +89,15 @@ async def create_report(
             or not conversation.is_participant(reporter.id)
         ):
             raise NotFound("Сообщение не найдено.")
-    duplicate = exists().where(
-        Report.reporter_id == reporter.id,
-        Report.target_user_id == target_user_id,
-        Report.status == ReportStatus.OPEN,
+    if not await _has_met(session, reporter, target_user_id):
+        raise UserNotFound()
+    reported_recently = await session.scalar(
+        select(func.count())
+        .select_from(Report)
+        .where(Report.reporter_id == reporter.id, Report.created_at > func.now() - REPORT_LIMIT_WINDOW)
     )
-    if await session.scalar(select(duplicate)):
-        raise AlreadyReported()
+    if (reported_recently or 0) >= REPORT_DAILY_LIMIT:
+        raise ReportLimitReached()
     report = Report(
         reporter_id=reporter.id,
         target_user_id=target_user_id,
@@ -97,6 +118,30 @@ async def create_report(
         },
     )
     return report
+
+
+async def _has_met(session: AsyncSession, reporter: User, target_user_id: int) -> bool:
+    """An interest (any status) or a conversation between the two, or the target's profile is one
+    the reporter may open (catalog)."""
+    contact = or_(
+        exists().where(
+            or_(
+                and_(Interest.from_user_id == reporter.id, Interest.to_user_id == target_user_id),
+                and_(Interest.from_user_id == target_user_id, Interest.to_user_id == reporter.id),
+            )
+        ),
+        exists().where(
+            Conversation.user_a_id == min(reporter.id, target_user_id),
+            Conversation.user_b_id == max(reporter.id, target_user_id),
+        ),
+    )
+    if await session.scalar(select(contact)):
+        return True
+    try:
+        await profiles.get_viewable_profile(session, reporter, target_user_id)
+    except DomainError:
+        return False
+    return True
 
 
 def _report_options() -> tuple[LoaderOption, ...]:

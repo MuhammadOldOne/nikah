@@ -15,6 +15,9 @@ x-app: &app
   restart: unless-stopped
   env_file: .env
   environment:
+    # This file is the production stack: never fall back to dev mode (public dev SECRET_KEY,
+    # cookies without Secure) because ENV is missing from .env.
+    ENV: prod
     # Built here so that the database password and the domain live in one place (.env).
     DATABASE_URL: postgresql+asyncpg://nikah:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/nikah
     SITE_URL: https://${DOMAIN:?set DOMAIN in .env}

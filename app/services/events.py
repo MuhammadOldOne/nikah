@@ -83,6 +83,21 @@ async def emit(
     return row
 
 
+async def count_recent(session: AsyncSession, kind: EventKind, within: timedelta, **payload: Any) -> int:
+    """How many ``kind`` events whose payload contains ``payload`` were emitted in the last
+    ``within`` (rate limits on actions that notify the admins)."""
+    count = await session.scalar(
+        select(func.count())
+        .select_from(Outbox)
+        .where(
+            Outbox.kind == kind.value,
+            Outbox.created_at > func.now() - within,
+            Outbox.payload.contains(payload),
+        )
+    )
+    return count or 0
+
+
 def _encode(data: Mapping[str, Any]) -> bytes:
     return json.dumps(data, separators=(",", ":")).encode()
 

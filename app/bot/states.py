@@ -6,6 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class ProfileForm(StatesGroup):
+    picking = State()  # editing: choose the field to change
     filling = State()
     confirm = State()
     consent = State()

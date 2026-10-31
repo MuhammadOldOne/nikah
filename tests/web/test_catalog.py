@@ -91,3 +91,20 @@ async def test_catalog_pagination_and_htmx_partial(client, dev_login, make_profi
     assert "<html" not in partial.text
     assert partial.text.count('class="card pcard"') == 2
     assert "HX-Request" in partial.headers["vary"]
+
+
+async def test_page_beyond_the_last_goes_to_the_last_page(client, dev_login, make_profile):
+    man = (await make_profile()).user
+    for _ in range(13):  # two pages of 12
+        await make_profile(gender=Gender.FEMALE, city="Уфа")
+    await dev_login(client, man)
+
+    response = await client.get("/catalog", params={"page": "99", "city": "Уфа"})
+    assert response.status_code == 303 and response.headers["location"] == "/catalog?city=%D0%A3%D1%84%D0%B0&page=2"
+    htmx = await client.get("/catalog", params={"page": "3"}, headers={"HX-Request": "true"})
+    assert htmx.status_code == 204 and htmx.headers["HX-Redirect"] == "/catalog?page=2"
+    assert (await client.get("/catalog", params={"page": "5", "city": "Нигде"})).headers["location"] == (
+        "/catalog?city=%D0%9D%D0%B8%D0%B3%D0%B4%D0%B5"
+    )
+    page = await client.get("/catalog", params={"page": "2"})
+    assert page.status_code == 200 and "Пока здесь пусто" not in page.text

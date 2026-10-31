@@ -312,7 +312,8 @@ docker compose run --rm web alembic history | head   # были ли новые 
 |---|---|
 | В логах бота `Conflict: terminated by other getUpdates request` | Работает второй процесс с тем же токеном: старый бот или локальный запуск. Шаг 7. |
 | `Conflict: can't use getUpdates method while webhook is active` | Webhook снова установил другой процесс с тем же токеном (старый бот). Остановите его (шаг 7) и перезапустите бота: `docker compose restart bot`. |
-| `web` не стартует: `SECRET_KEY must be set...` | Не заполнен `SECRET_KEY` в `.env` (шаг 4). |
+| `web` не стартует: `SECRET_KEY must be set...` | Не заполнен `SECRET_KEY` в `.env` (шаг 4). `docker-compose.yml` всегда запускает приложение с `ENV=prod`, даже если строки `ENV` в `.env` нет. |
+| `the development SECRET_KEY cannot be used for an https:// SITE_URL` | Приложение запущено без `ENV=prod` и без `SECRET_KEY` (например, не через `docker compose`). Задайте оба значения. |
 | `required variable ... is missing a value` | Не заполнены `DOMAIN` или `POSTGRES_PASSWORD` в `.env`. |
 | Нет HTTPS, в логах Caddy ошибки ACME | DNS ещё не указывает на сервер или закрыты порты 80/443 (шаги 1, 5). |
 | 502 Bad Gateway | `web` не запустился: `docker compose logs web`. |

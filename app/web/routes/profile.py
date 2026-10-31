@@ -7,10 +7,18 @@ from fastapi.responses import RedirectResponse, Response
 from pydantic import ValidationError
 
 from app.enums import ProfileStatus
+from app.models import User
 from app.schemas import INTEREST_MESSAGE_MAX, REPORT_COMMENT_MAX, ProfileCreate, ProfileUpdate, humanize_errors
 from app.services import guardians, interests, profiles, users
-from app.services.errors import DomainError, ProfileAlreadyExists, ProfileNotFound
-from app.web.deps import LoginDep, ProfileUserDep, SessionDep, UserDep, flash, logout_user
+from app.services.errors import (
+    DomainError,
+    InterestLimitReached,
+    InvalidInput,
+    ProfileAlreadyExists,
+    ProfileNotFound,
+    ProfileUnderReview,
+)
+from app.web.deps import IdPath, LoginDep, ProfileUserDep, SessionDep, UserDep, flash, logout_user
 from app.web.forms import CONSENT_FIELDS, PROFILE_FIELDS, first_error_step, form_context, form_values, profile_values
 from app.web.render import render
 from app.web.reports import submit_report
@@ -110,9 +118,10 @@ async def edit_submit(request: Request, session: SessionDep, user: ProfileUserDe
     before = profile_values(profile)
     try:
         profile = await profiles.update_profile(session, user, data)
-    except DomainError as exc:
+    except DomainError as exc:  # e.g. too many submissions: keep what the person typed
         flash(request, exc.message, "error")
-        return _redirect("/me")
+        context = form_context(values, {}, profile.gender.value)
+        return await render(request, "profile/edit.html", context, session=session, user=user, status_code=422)
     if profile_values(profile) == before:
         flash(request, "Изменений нет.", "info")
     elif profile.status == ProfileStatus.PENDING:
@@ -164,9 +173,24 @@ async def delete_account(request: Request, session: SessionDep, user: LoginDep) 
 
 
 @router.get("/u/{user_id:int}")
-async def view_profile(request: Request, session: SessionDep, user: ProfileUserDep, user_id: int) -> Response:
+async def view_profile(request: Request, session: SessionDep, user: ProfileUserDep, user_id: IdPath) -> Response:
+    return await _profile_page(request, session, user, user_id)
+
+
+async def _profile_page(
+    request: Request,
+    session: SessionDep,
+    user: User,
+    user_id: int,
+    *,
+    interest_draft: str = "",
+    interest_error: str | None = None,
+    status_code: int = status.HTTP_200_OK,
+) -> Response:
     try:
         profile = await profiles.get_viewable_profile(session, user, user_id)
+    except ProfileUnderReview as exc:  # a counterpart's edited or rejected profile: say why
+        raise HTTPException(status.HTTP_404_NOT_FOUND, exc.message) from exc
     except ProfileNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND) from exc
     is_own = profile.user_id == user.id
@@ -182,19 +206,33 @@ async def view_profile(request: Request, session: SessionDep, user: ProfileUserD
             "has_guardian": await guardians.has_active_guardian(session, profile.user_id),
             "message_max": INTEREST_MESSAGE_MAX,
             "comment_max": REPORT_COMMENT_MAX,
+            "interest_draft": interest_draft,
+            "interest_error": interest_error,
         },
         session=session,
         user=user,
+        status_code=status_code,
     )
 
 
 @router.post("/u/{user_id:int}/interest")
-async def send_interest(request: Request, session: SessionDep, user: ProfileUserDep, user_id: int) -> Response:
+async def send_interest(request: Request, session: SessionDep, user: ProfileUserDep, user_id: IdPath) -> Response:
     form = await request.form()
     message = form.get("message")
+    draft = message if isinstance(message, str) else None
     try:
-        await interests.send_interest(session, user, user_id, message if isinstance(message, str) else None)
-    except DomainError as exc:
+        await interests.send_interest(session, user, user_id, draft)
+    except (InvalidInput, InterestLimitReached) as exc:  # the form stays: show the error, keep the text
+        return await _profile_page(
+            request,
+            session,
+            user,
+            user_id,
+            interest_draft=draft or "",
+            interest_error=exc.message,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+    except DomainError as exc:  # the relation changed (e.g. an interest arrived): the page explains it
         flash(request, exc.message, "error")
     else:
         flash(request, "Отклик отправлен. Мы сообщим, когда на него ответят.", "success")
@@ -202,7 +240,7 @@ async def send_interest(request: Request, session: SessionDep, user: ProfileUser
 
 
 @router.post("/u/{user_id:int}/report")
-async def report_profile(request: Request, session: SessionDep, user: ProfileUserDep, user_id: int) -> Response:
+async def report_profile(request: Request, session: SessionDep, user: ProfileUserDep, user_id: IdPath) -> Response:
     if not await submit_report(request, session, user, user_id):
         return _redirect(f"/u/{user_id}")
     flash(request, "Жалоба отправлена модератору. Этот человек больше не будет виден вам в каталоге.", "success")

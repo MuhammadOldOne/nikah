@@ -9,6 +9,7 @@
 {% set is_open = conversation.closed_at is none and partner is not none %}
 <section class="chat" id="chat" aria-label="Переписка"
   data-messages-url="/chats/{{ conversation.id }}/messages"
+  data-partner="{{ partner_profile.name if partner_profile else 'Собеседник' }}"
   data-last-id="{{ messages[-1].id if messages else 0 }}"
   data-open="{{ '1' if is_open else '0' }}">
   <header class="chat__header">
@@ -57,15 +58,16 @@
   {% for item in flashes %}
   <div class="chat__notice" role="status">{{ m.icon('info') }}<span>{{ item.message }}</span></div>
   {% endfor %}
-  {% if wali_watching %}
-  <div class="chat__notice"><span>👁 Вали подключён — переписка видна вали.</span></div>
-  {% endif %}
+  {# Always rendered: chat.js reveals it when a wali is linked while the page is open. #}
+  <div class="chat__notice" id="wali-notice" role="status"{% if not wali_watching %} hidden{% endif %}><span>👁 Вали подключён — переписка видна вали.</span></div>
   {% if partner is none %}
   <div class="chat__notice chat__notice--closed">{{ m.icon('lock') }}<span>Собеседник удалил аккаунт. Переписка закрыта.</span></div>
   {% elif conversation.closed_at %}
   <div class="chat__notice chat__notice--closed">{{ m.icon('lock') }}<span>{{ label(conversation.close_reason) if conversation.close_reason else 'Общение завершено' }} · {{ conversation.closed_at|msk_date }}. Писать в этот чат нельзя.</span></div>
   {% endif %}
 
+  {# Screen readers hear the partner's new messages (not the history or one's own). #}
+  <div class="visually-hidden" id="chat-announcer" aria-live="polite" aria-atomic="true"></div>
   <ol class="messages" id="messages" aria-label="Сообщения">
     {% if has_more %}
     <li class="messages__more js-only-block"><button class="btn btn-ghost" type="button" id="load-older" data-before-id="{{ messages[0].id }}">Показать ранние сообщения</button></li>
@@ -82,7 +84,7 @@
     <input type="hidden" name="after_id" value="{{ messages[-1].id if messages else 0 }}">
     <div class="composer__field">
       <label class="visually-hidden" for="composer-text">Сообщение</label>
-      <textarea id="composer-text" name="text" rows="1" maxlength="{{ message_max }}" required placeholder="Сообщение…" data-counter="{{ message_max }}" data-counter-from="1500" enterkeyhint="send"></textarea>
+      <textarea id="composer-text" name="text" rows="1" maxlength="{{ message_max }}" required placeholder="Сообщение…" data-counter="{{ message_max }}" data-counter-from="1500"></textarea>
     </div>
     <button class="btn btn-primary" type="submit" aria-label="Отправить">{{ m.icon('send') }}</button>
   </form>

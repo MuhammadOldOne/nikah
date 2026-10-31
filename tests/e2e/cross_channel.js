@@ -235,9 +235,9 @@ async function main() {
     await sister.locator("#wali .alert--success", { hasText: "Вали подключён" }).waitFor();
     await shot(sister, "12-wali-linked");
 
-    await brother.reload();
-    await waitLive(brother);
-    await brother.locator(".chat__notice", { hasText: "Вали подключён" }).waitFor();
+    // The brother's open chat page shows the wali notice at once, without a reload.
+    await brother.locator("#wali-notice", { hasText: "Вали подключён" }).waitFor({ timeout: LIVE_TIMEOUT });
+    await expectNoReload(brother, "brother wali notice");
     await sister.goto(`${BASE}/chats/${result.conversationId}`);
     await waitLive(sister);
     await drain("wali");

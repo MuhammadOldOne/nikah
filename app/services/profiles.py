@@ -10,10 +10,12 @@ Status rules (PREMODERATION on):
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy import ColumnElement, and_, exists, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -30,6 +32,8 @@ from app.services.errors import (
     ProfileNotFound,
     ProfileRequired,
     ProfileStateError,
+    ProfileSubmissionLimitReached,
+    ProfileUnderReview,
     UserBanned,
 )
 from app.services.relations import report_between
@@ -38,6 +42,9 @@ from app.text import normalize_city_key
 
 DEFAULT_PER_PAGE = 20
 MAX_PER_PAGE = 50
+# Every submission sends a moderation card to every admin in Telegram.
+SUBMISSIONS_PER_HOUR = 5
+SUBMISSION_WINDOW = timedelta(hours=1)
 _FLAGGED_FIELDS = ("name", "city", "occupation", "nationality", "wishes", "about")
 
 
@@ -68,6 +75,15 @@ async def _submit(session: AsyncSession, profile: Profile) -> None:
         await session.flush()
 
 
+async def _check_submission_rate(session: AsyncSession, user_id: int) -> None:
+    """At most SUBMISSIONS_PER_HOUR re-submissions (premoderation only: they reach the admins)."""
+    if not get_settings().PREMODERATION:
+        return
+    recent = await events.count_recent(session, events.EventKind.PROFILE_SUBMITTED, SUBMISSION_WINDOW, user_id=user_id)
+    if recent >= SUBMISSIONS_PER_HOUR:
+        raise ProfileSubmissionLimitReached()
+
+
 async def get_profile(session: AsyncSession, user_id: int) -> Profile | None:
     """Profile by its owner's user id (= profile id), with ``user`` loaded; no visibility checks."""
     return await session.scalar(select(Profile).where(Profile.user_id == user_id).options(selectinload(Profile.user)))
@@ -86,9 +102,13 @@ async def create_profile(session: AsyncSession, user: User, data: ProfileCreate)
     if await session.scalar(select(exists().where(Profile.user_id == user.id))):
         raise ProfileAlreadyExists()
     profile = Profile(user_id=user.id, **data.model_dump())
-    profile.user = user
     _apply_flags(profile)
-    session.add(profile)
+    try:
+        async with session.begin_nested():
+            session.add(profile)
+    except IntegrityError as exc:  # created concurrently (e.g. a double submit)
+        raise ProfileAlreadyExists() from exc
+    user.profile = profile
     await _submit(session, profile)
     return profile
 
@@ -103,6 +123,8 @@ async def update_profile(session: AsyncSession, user: User, data: ProfileUpdate)
     changes = {name: value for name, value in data.changes().items() if getattr(profile, name) != value}
     if not changes:
         return profile
+    if profile.status != ProfileStatus.HIDDEN:
+        await _check_submission_rate(session, user.id)
     for name, value in changes.items():
         setattr(profile, name, value)
     _apply_flags(profile)
@@ -141,6 +163,7 @@ async def show(session: AsyncSession, user: User) -> Profile:
         profile.approved_at = profile.approved_at or utcnow()
         await session.flush()
     else:
+        await _check_submission_rate(session, user.id)
         await _submit(session, profile)
     return profile
 
@@ -202,6 +225,17 @@ async def list_pending(session: AsyncSession, *, limit: int = 50, offset: int = 
     return list(result.all())
 
 
+def approved_content() -> ColumnElement[bool]:
+    """The profile's current content was approved by a moderator (or published without
+    premoderation): only such content is shown to other people."""
+    return and_(Profile.approved_at.is_not(None), Profile.status != ProfileStatus.REJECTED)
+
+
+def has_approved_content(profile: Profile) -> bool:
+    """Python twin of ``approved_content``."""
+    return profile.approved_at is not None and profile.status != ProfileStatus.REJECTED
+
+
 def _visible_to(viewer_id: int, gender: Gender) -> list[ColumnElement[bool]]:
     """Catalog visibility: active, opposite gender, owner not banned, not the viewer, and no
     report between the two users in either direction."""
@@ -223,21 +257,7 @@ async def _viewer_profile(session: AsyncSession, viewer: User) -> Profile:
     return profile
 
 
-async def list_catalog(
-    session: AsyncSession,
-    viewer: User,
-    filters: CatalogFilters | None = None,
-    page: int = 1,
-    per_page: int = DEFAULT_PER_PAGE,
-) -> tuple[list[Profile], int]:
-    """A page of profiles visible to ``viewer`` (newest approved first) and the total count.
-
-    The viewer needs a profile in any status (pending users may browse). Items have ``user`` loaded.
-    """
-    own = await _viewer_profile(session, viewer)
-    filters = filters or CatalogFilters()
-    page = max(page, 1)
-    per_page = max(1, min(per_page, MAX_PER_PAGE))
+def _catalog_conditions(viewer: User, own: Profile, filters: CatalogFilters) -> list[ColumnElement[bool]]:
     conditions = _visible_to(viewer.id, own.gender)
     year = current_year()
     if filters.age_min is not None:
@@ -252,7 +272,24 @@ async def list_catalog(
         conditions.append(Profile.children > 0 if filters.has_children else Profile.children == 0)
     if filters.education is not None:
         conditions.append(Profile.education == filters.education)
+    return conditions
 
+
+async def list_catalog(
+    session: AsyncSession,
+    viewer: User,
+    filters: CatalogFilters | None = None,
+    page: int = 1,
+    per_page: int = DEFAULT_PER_PAGE,
+) -> tuple[list[Profile], int]:
+    """A page of profiles visible to ``viewer`` (newest approved first) and the total count.
+
+    The viewer needs a profile in any status (pending users may browse). Items have ``user`` loaded.
+    """
+    own = await _viewer_profile(session, viewer)
+    page = max(page, 1)
+    per_page = max(1, min(per_page, MAX_PER_PAGE))
+    conditions = _catalog_conditions(viewer, own, filters or CatalogFilters())
     base = select(Profile).join(User, User.id == Profile.user_id).where(*conditions)
     total = await session.scalar(select(func.count()).select_from(base.subquery())) or 0
     items = await session.scalars(
@@ -264,12 +301,37 @@ async def list_catalog(
     return list(items.all()), total
 
 
+async def catalog_position(
+    session: AsyncSession, viewer: User, filters: CatalogFilters | None, user_id: int
+) -> int | None:
+    """1-based position of ``user_id`` in the viewer's catalog (``list_catalog`` order), or None if
+    the profile is no longer in it (reported, hidden, filtered out…). Lets one-card browsing (the
+    bot) continue after the card it showed, even when the list changed meanwhile."""
+    own = await _viewer_profile(session, viewer)
+    conditions = _catalog_conditions(viewer, own, filters or CatalogFilters())
+    visible = select(Profile).join(User, User.id == Profile.user_id).where(*conditions)
+    target = await session.scalar(visible.where(Profile.user_id == user_id))
+    if target is None:
+        return None
+    if target.approved_at is None:  # sorted last (nulls last), then by id
+        before = or_(Profile.approved_at.is_not(None), Profile.user_id > target.user_id)
+    else:
+        before = or_(
+            Profile.approved_at > target.approved_at,
+            and_(Profile.approved_at == target.approved_at, Profile.user_id > target.user_id),
+        )
+    ahead = await session.scalar(select(func.count()).select_from(visible.where(before).subquery()))
+    return (ahead or 0) + 1
+
+
 async def get_viewable_profile(session: AsyncSession, viewer: User, user_id: int) -> Profile:
     """A profile ``viewer`` may open (``/u/{id}``, bot ``p_<id>``), with ``user`` loaded.
 
     Allowed: one's own profile; a catalog-visible profile; or the profile of someone the viewer
-    has a pending/accepted interest or a conversation with (unless that user is banned).
-    Raises ProfileNotFound otherwise, ProfileRequired if the viewer has no profile.
+    has a pending/accepted interest or a conversation with (unless that user is banned) — also when
+    hidden by its owner, but never content a moderator has not approved: an edited (pending) or
+    rejected counterpart raises ProfileUnderReview. Raises ProfileNotFound otherwise,
+    ProfileRequired if the viewer has no profile.
     """
     if user_id == viewer.id:
         own = await get_profile(session, viewer.id)
@@ -302,6 +364,8 @@ async def get_viewable_profile(session: AsyncSession, viewer: User, user_id: int
     )
     if profile is None:
         raise ProfileNotFound()
+    if not has_approved_content(profile):
+        raise ProfileUnderReview()
     return profile
 
 

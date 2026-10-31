@@ -1,5 +1,5 @@
-"""Commands and main-menu buttons. This router is checked first, so they work in any dialog
-state (a menu button leaves the current dialog instead of being read as an answer)."""
+"""Commands, main-menu buttons and replies to chat messages. This router is checked first, so
+they work in any dialog state (they leave the current dialog instead of being read as an answer)."""
 
 from __future__ import annotations
 
@@ -58,4 +58,5 @@ def create_router() -> Router:
     router.message.register(on_stop, Command("stop"))
     router.message.register(on_delete, Command("delete"))
     router.message.register(on_menu, F.text.in_(texts.MENU_BUTTONS))
+    router.message.register(chats.on_chat_reply, chats.chat_reply_filter)
     return router

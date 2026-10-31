@@ -57,6 +57,9 @@
   {% if profile.moderation_note %}<p class="adm-meta">Причина отклонения: {{ profile.moderation_note }}</p>{% endif %}
   {{ am.flags(profile.flag_reason) }}
   {{ am.profile_card(profile) }}
+  {% if profile.status.value != 'rejected' %}
+  <div class="adm-actions">{{ am.reject_form(profile, 'Снять с публикации…' if profile.status.value != 'pending' else 'Отклонить…') }}</div>
+  {% endif %}
   {% else %}
   <p class="adm-empty">Анкеты нет.</p>
   {% endif %}

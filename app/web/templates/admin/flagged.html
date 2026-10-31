@@ -40,6 +40,9 @@
     <summary>Анкета целиком</summary>
     {{ am.profile_card(profile) }}
   </details>
+  {% if profile.status.value != 'rejected' %}
+  <div class="adm-actions">{{ am.reject_form(profile, 'Снять с публикации…' if profile.status.value != 'pending' else 'Отклонить…') }}</div>
+  {% endif %}
 </article>
 {% else %}
 <p class="adm-empty">Помеченных анкет нет.</p>

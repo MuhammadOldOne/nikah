@@ -136,12 +136,13 @@
     var url = body.dataset.stream;
     if (!url || !window.EventSource) return;
     stream = new EventSource(url);
-    ["ready", "resync", "badge", "message", "closed"].forEach(function (name) {
+    ["ready", "resync", "badge", "message", "closed", "wali"].forEach(function (name) {
       stream.addEventListener(name, function (event) {
         var detail = {};
         try { detail = JSON.parse(event.data || "{}"); } catch (e) { /* ignore */ }
         document.dispatchEvent(new CustomEvent("live:" + name, { detail: detail }));
-        if (name === "badge" || name === "resync") refreshBadges();
+        // "ready" follows every (re)connection: events sent while disconnected were missed.
+        if (name === "badge" || name === "resync" || name === "ready") refreshBadges();
       });
     });
   }

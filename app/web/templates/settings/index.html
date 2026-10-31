@@ -97,7 +97,8 @@
       <div><dt>Номер анкеты</dt><dd>#{{ user.id }}</dd></div>
       {% if user.consent_at %}<div><dt>Согласие на обработку данных</dt><dd>{{ user.consent_at|msk_date }} · <a href="/consent">текст</a></dd></div>{% endif %}
     </dl>
-    <form method="post" action="/logout">{{ m.csrf_field() }}<button class="btn btn-ghost" type="submit">{{ m.icon('logout') }} Выйти</button></form>
+    <p class="small muted">«Выйти» завершает вход на сайт на всех устройствах — например, если вы входили с чужого телефона.</p>
+    <form method="post" action="/logout">{{ m.csrf_field() }}<button class="btn btn-ghost" type="submit">{{ m.icon('logout') }} Выйти на всех устройствах</button></form>
   </section>
 
   {% with back = "/settings" %}{% include "partials/delete_account.html" %}{% endwith %}

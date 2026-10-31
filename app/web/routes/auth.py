@@ -17,7 +17,7 @@ from app.config import get_settings
 from app.enums import LoginTokenState
 from app.models import User
 from app.services import auth, users
-from app.web.deps import OptionalUserDep, SessionDep, flash, login_user, logout_user, safe_next_url
+from app.web.deps import DB_ID_MAX, OptionalUserDep, SessionDep, flash, login_user, logout_user, safe_next_url
 from app.web.render import render
 from app.web.security import CSP_TELEGRAM_WIDGET
 
@@ -108,7 +108,9 @@ async def telegram_widget(request: Request, session: SessionDep) -> Response:
     settings = get_settings()
     if not settings.TELEGRAM_WIDGET_ENABLED:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
-    widget_user = auth.verify_telegram_widget(dict(request.query_params), settings.TELEGRAM_TOKEN.get_secret_value())
+    widget_user = await auth.consume_widget_login(
+        session, dict(request.query_params), settings.TELEGRAM_TOKEN.get_secret_value()
+    )
     if widget_user is None:
         flash(request, "Не удалось подтвердить вход через Telegram. Попробуйте ещё раз.", "error")
         return _redirect("/login")
@@ -133,7 +135,7 @@ async def magic_link(request: Request, session: SessionDep, token: str) -> Respo
 async def dev_login(
     request: Request,
     session: SessionDep,
-    telegram_id: Annotated[int, Query(gt=0)],
+    telegram_id: Annotated[int, Query(gt=0, le=DB_ID_MAX)],
     username: Annotated[str | None, Query(max_length=64)] = None,
     first_name: Annotated[str | None, Query(max_length=128)] = None,
     next: str | None = None,
@@ -156,7 +158,10 @@ def _finish_login(request: Request, user: User, next_url: object) -> Response:
 
 
 @router.post("/logout")
-async def logout(request: Request) -> Response:
+async def logout(request: Request, session: SessionDep, user: OptionalUserDep) -> Response:
+    """Ends the session on the server as well: a copied cookie stops working on every device."""
+    if user is not None:
+        await users.end_web_sessions(session, user)
     logout_user(request)
-    flash(request, "Вы вышли из аккаунта.", "info")
+    flash(request, "Вы вышли из аккаунта на всех устройствах.", "info")
     return _redirect("/")

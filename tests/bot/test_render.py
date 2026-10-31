@@ -112,7 +112,10 @@ def test_interest_accepted_and_declined_are_gender_aware_and_gentle():
 def test_conversation_closed_text_by_reason():
     partner = person(4, "Фатима", Gender.FEMALE)
     assert "завершила общение" in render.conversation_closed(ConversationCloseReason.CLOSED_BY_USER, partner).text
-    assert "заблокирован" in render.conversation_closed(ConversationCloseReason.USER_BANNED, partner).text
+    banned_sister = render.conversation_closed(ConversationCloseReason.USER_BANNED, partner).text
+    assert banned_sister == "🔒 Чат закрыт: собеседница <b>Фатима</b> (#4) заблокирована модератором."
+    banned_brother = render.conversation_closed(ConversationCloseReason.USER_BANNED, person(5, "Ахмад", Gender.MALE))
+    assert "собеседник <b>Ахмад</b> (#5) заблокирован модератором" in banned_brother.text
     assert "удалил аккаунт" in render.conversation_closed(ConversationCloseReason.ACCOUNT_DELETED, None).text
 
 
@@ -190,3 +193,10 @@ def test_longest_cards_fit_in_one_telegram_message():
         render.my_profile(rejected.profile),
     ]
     assert max(len(text) for text in texts) <= 4096
+
+
+def test_adult_step_names_the_spouse_by_gender():
+    from app.bot.handlers.profile import _adult_text
+
+    assert "не женаты и ищете супругу для никаха" in _adult_text(Gender.MALE)
+    assert "не замужем и ищете супруга для никаха" in _adult_text(Gender.FEMALE)

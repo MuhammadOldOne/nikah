@@ -176,3 +176,21 @@ def test_find_stop_words(text: str, marker: str):
 )
 def test_find_stop_words_ignores_ordinary_text(text: str):
     assert find_stop_words(text) == []
+
+
+async def test_reports_need_a_known_target_and_are_limited_per_day(session, make_pair, make_profile, make_user):
+    from app.services.errors import ReportLimitReached
+
+    man, _ = await make_pair()
+    stranger = await make_user()  # no profile, never met: cannot be reported (no card flood)
+    with pytest.raises(UserNotFound):
+        await moderation.create_report(session, man, stranger.id, ReportReason.OTHER)
+    same_gender = (await make_profile(gender=Gender.MALE)).user  # not in his catalog
+    with pytest.raises(UserNotFound):
+        await moderation.create_report(session, man, same_gender.id, ReportReason.OTHER)
+
+    women = [(await make_profile(gender=Gender.FEMALE)).user for _ in range(moderation.REPORT_DAILY_LIMIT + 1)]
+    for woman in women[:-1]:
+        await moderation.create_report(session, man, woman.id, ReportReason.FAKE, "к" * 1000)
+    with pytest.raises(ReportLimitReached):
+        await moderation.create_report(session, man, women[-1].id, ReportReason.FAKE)

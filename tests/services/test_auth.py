@@ -21,7 +21,7 @@ WIDGET_DATA = {
     "auth_date": "1700000000",
     "hash": "f7dec2860794e7b561432f9b3de8f7243173df8437f1c4adbd7b7b0b83621246",
 }
-WIDGET_NOW = 1700000000 + 3600
+WIDGET_NOW = 1700000000 + 60
 
 
 async def expire(session, token: str) -> None:
@@ -161,7 +161,19 @@ def test_widget_rejects_wrong_token_missing_hash_and_old_or_future_data():
     assert auth.verify_telegram_widget(WIDGET_DATA, "", now=WIDGET_NOW) is None
     without_hash = {key: value for key, value in WIDGET_DATA.items() if key != "hash"}
     assert auth.verify_telegram_widget(without_hash, BOT_TOKEN, now=WIDGET_NOW) is None
-    too_late = 1700000000 + 86400 + 1
+    too_late = 1700000000 + 5 * 60 + 1  # widget data is accepted for 5 minutes
     assert auth.verify_telegram_widget(WIDGET_DATA, BOT_TOKEN, now=too_late) is None
     too_early = 1700000000 - 3600
     assert auth.verify_telegram_widget(WIDGET_DATA, BOT_TOKEN, now=too_early) is None
+
+
+async def test_widget_login_data_is_single_use(session):
+    assert await auth.consume_widget_login(session, WIDGET_DATA, BOT_TOKEN, now=WIDGET_NOW) == auth.TelegramWidgetUser(
+        telegram_id=987654321, username="ahmad_k", first_name="Ahmad"
+    )
+    # The same signed URL again (browser history, a log line): rejected.
+    assert await auth.consume_widget_login(session, WIDGET_DATA, BOT_TOKEN, now=WIDGET_NOW + 1) is None
+    assert await auth.consume_widget_login(session, {**WIDGET_DATA, "id": "1"}, BOT_TOKEN, now=WIDGET_NOW) is None
+    stored = (await session.scalars(select(LoginToken))).all()
+    assert [(row.kind, row.consumed_at is not None) for row in stored] == [(LoginTokenKind.WIDGET, True)]
+    assert WIDGET_DATA["hash"] not in stored[0].token_hash

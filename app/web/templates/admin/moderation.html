@@ -23,22 +23,7 @@
       <input type="hidden" name="version" value="{{ profile_version(profile) }}">
       <button type="submit" class="adm-btn adm-btn--ok">Одобрить</button>
     </form>
-    <details class="adm-confirm">
-      <summary class="adm-btn adm-btn--danger">Отклонить…</summary>
-      <form method="post" action="/admin/moderation/{{ profile.user_id }}/reject" class="adm-reject">
-        {{ am.csrf() }}{{ am.back() }}
-        <input type="hidden" name="version" value="{{ profile_version(profile) }}">
-        <fieldset>
-          <legend>Причина — её увидит автор анкеты</legend>
-          {% for title, text in reject_presets %}
-          <label class="adm-radio"><input type="radio" name="preset" value="{{ loop.index0 }}"{% if loop.first %} checked{% endif %}> <span><b>{{ title }}.</b> {{ text }}</span></label>
-          {% endfor %}
-          <label class="adm-block" for="note-{{ profile.user_id }}">Своя причина (если заполнена, заменяет выбранную)</label>
-          <textarea id="note-{{ profile.user_id }}" name="note" rows="2" maxlength="500"></textarea>
-        </fieldset>
-        <button type="submit" class="adm-btn adm-btn--danger">Отклонить анкету</button>
-      </form>
-    </details>
+    {{ am.reject_form(profile) }}
   </div>
 </article>
 {% else %}

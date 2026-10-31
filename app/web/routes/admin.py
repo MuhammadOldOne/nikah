@@ -35,7 +35,7 @@ from app.services import moderation, profiles, users
 from app.services.errors import DomainError, ProfileNotFound, ProfileStateError
 from app.services.stopwords import find_stop_words
 from app.text import plural
-from app.web.deps import AdminDep, SessionDep, flash, require_admin, safe_next_url
+from app.web.deps import AdminDep, IdPath, SessionDep, flash, require_admin, safe_next_url
 from app.web.templating import templates
 
 logger = logging.getLogger(__name__)
@@ -244,6 +244,7 @@ async def _render(
             "excerpt": excerpt,
             "profile_rows": profile_rows,
             "profile_version": profile_version,
+            "reject_presets": REJECT_PRESETS,
             **context,
         },
     )
@@ -296,7 +297,7 @@ async def moderation_queue(request: Request, session: SessionDep, admin: AdminDe
         session,
         admin,
         "moderation.html",
-        {"profiles": items, "pager": pager, "reject_presets": REJECT_PRESETS},
+        {"profiles": items, "pager": pager},
     )
 
 
@@ -316,7 +317,7 @@ async def approve_profile(
     request: Request,
     session: SessionDep,
     admin: AdminDep,
-    user_id: int,
+    user_id: IdPath,
     version: Annotated[str, Form(max_length=64)] = "",
     next_url: NextField = None,
 ) -> RedirectResponse:
@@ -336,7 +337,7 @@ async def reject_profile(
     request: Request,
     session: SessionDep,
     admin: AdminDep,
-    user_id: int,
+    user_id: IdPath,
     version: Annotated[str, Form(max_length=64)] = "",
     preset: Annotated[str, Form(max_length=8)] = "",
     note: Annotated[str, Form(max_length=4000)] = "",
@@ -384,7 +385,7 @@ async def resolve_report(
     request: Request,
     session: SessionDep,
     admin: AdminDep,
-    report_id: int,
+    report_id: IdPath,
     action: Annotated[ReportAction, Form()],
     next_url: NextField = None,
 ) -> RedirectResponse:
@@ -499,7 +500,7 @@ async def _get_user_or_404(session: AsyncSession, user_id: int) -> User:
 
 
 @router.get("/users/{user_id:int}")
-async def user_page(request: Request, session: SessionDep, admin: AdminDep, user_id: int) -> HTMLResponse:
+async def user_page(request: Request, session: SessionDep, admin: AdminDep, user_id: IdPath) -> HTMLResponse:
     user = await _get_user_or_404(session, user_id)
     result = await session.scalars(
         select(Report)
@@ -528,7 +529,7 @@ async def user_page(request: Request, session: SessionDep, admin: AdminDep, user
 
 @router.post("/users/{user_id:int}/ban")
 async def ban_user(
-    request: Request, session: SessionDep, admin: AdminDep, user_id: int, next_url: NextField = None
+    request: Request, session: SessionDep, admin: AdminDep, user_id: IdPath, next_url: NextField = None
 ) -> RedirectResponse:
     user = await _get_user_or_404(session, user_id)
     if user.is_banned:
@@ -546,7 +547,7 @@ async def ban_user(
 
 @router.post("/users/{user_id:int}/unban")
 async def unban_user(
-    request: Request, session: SessionDep, admin: AdminDep, user_id: int, next_url: NextField = None
+    request: Request, session: SessionDep, admin: AdminDep, user_id: IdPath, next_url: NextField = None
 ) -> RedirectResponse:
     user = await _get_user_or_404(session, user_id)
     if not user.is_banned:

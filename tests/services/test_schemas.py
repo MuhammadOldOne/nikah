@@ -214,3 +214,12 @@ def test_text_helpers():
     assert plural(11, "анкета", "анкеты", "анкет") == "анкет"
     assert plural(22, "анкета", "анкеты", "анкет") == "анкеты"
     assert plural(25, "анкета", "анкеты", "анкет") == "анкет"
+
+
+def test_zero_width_joiner_is_kept_only_inside_emoji_sequences():
+    family, heart_on_fire, coder = "👨‍👩‍👧", "❤️‍🔥", "👨🏽‍💻"
+    assert ChatMessageIn(text=f"{family} {heart_on_fire} {coder}").text == f"{family} {heart_on_fire} {coder}"
+    # Between letters or digits it would hide contacts from the checks: removed.
+    assert clean_line("@na‍me_123") == "@name_123" and find_contacts(clean_line("@na‍me_123"))
+    assert find_contacts(clean_text("8‍912‍345‍67‍89")) == ["89123456789"]
+    assert clean_line("✋‍ ‍👩 ‮текст") == "✋ 👩 текст"

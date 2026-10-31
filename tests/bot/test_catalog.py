@@ -5,10 +5,10 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from app.bot import texts
-from app.bot.callbacks import CatalogAction, CatalogCb, InterestAction, InterestCb, ReportCb
+from app.bot.callbacks import REPORT_SEND, CatalogAction, CatalogCb, InterestAction, InterestCb, ReportCb
 from app.clock import current_year
 from app.enums import Gender, InterestStatus, ProfileStatus, ReportReason
-from app.models import Conversation, Interest, Report
+from app.models import Conversation, Interest, Profile, Report
 from app.services import interests
 from tests.bot.conftest import button_data
 
@@ -127,3 +127,30 @@ async def test_report_from_catalog(harness, session, make_pair):
         "Просил перевести деньги",
     )
     assert harness.last_text(woman) == texts.REPORT_SENT
+
+
+async def test_next_after_reporting_the_shown_card_skips_nobody(harness, session, make_profile):
+    from datetime import timedelta
+
+    from app.clock import utcnow
+
+    man = (await make_profile(gender=Gender.MALE)).user
+    names = ["Айша", "Билкис", "Зайнаб", "Дания", "Ева"]  # newest approved first
+    for age, name in enumerate(names):
+        await make_profile(gender=Gender.FEMALE, name=name, approved_at=utcnow() - timedelta(minutes=age))
+    zainab = await session.scalar(select(Profile.user_id).where(Profile.name == "Зайнаб"))
+
+    await harness.text(man, texts.MENU_CATALOG)
+    await harness.press(man, CatalogCb(action=CatalogAction.NEXT).pack())
+    await harness.press(man, CatalogCb(action=CatalogAction.NEXT).pack())
+    assert "<b>Зайнаб</b>" in harness.edited_texts()[-1] and "Анкета 3 из 5" in harness.edited_texts()[-1]
+    await harness.press(man, CatalogCb(action=CatalogAction.REPORT, user_id=zainab).pack())
+    await harness.press(man, ReportCb(user_id=zainab, reason=ReportReason.FAKE).pack())
+    await harness.press(man, REPORT_SEND)
+    assert harness.last_text(man) == texts.REPORT_SENT
+
+    await harness.press(man, CatalogCb(action=CatalogAction.NEXT).pack())  # on the old card
+
+    assert "<b>Дания</b>" in harness.edited_texts()[-1] and "Анкета 3 из 4" in harness.edited_texts()[-1]
+    await harness.press(man, CatalogCb(action=CatalogAction.NEXT).pack())
+    assert "<b>Ева</b>" in harness.edited_texts()[-1]

@@ -52,3 +52,30 @@ async def test_flagged_interests_and_profiles(admin_client, session, make_pair, 
     profiles_page = await admin_client.get("/admin/flagged", kind="profiles")
     assert "<mark>ставки</mark>" in profiles_page.text
     assert (await admin_client.get("/admin/flagged", kind="secrets")).status_code == 400
+
+
+async def test_published_flagged_profile_can_be_taken_down(admin_client, session, make_profile, override_settings):
+    import re
+
+    from app.enums import ProfileStatus
+    from app.services import profiles
+
+    override_settings(PREMODERATION=False)  # published at once: it never enters the moderation queue
+    profile = await make_profile(gender=Gender.FEMALE, about="Пассивный доход, инвестиции в крипту")
+    profile.flagged, profile.flag_reason = True, "инвестиции, крипту"
+    await session.commit()
+
+    for page in ("/admin/flagged?kind=profiles", f"/admin/users/{profile.user_id}"):
+        html = (await admin_client.get(page)).text
+        assert f'action="/admin/moderation/{profile.user_id}/reject"' in html and "Снять с публикации" in html, page
+    version = re.search(r'name="version" value="([^"]*)"', html).group(1)
+
+    response = await admin_client.post(
+        f"/admin/moderation/{profile.user_id}/reject", version=version, preset="1", next="/admin/flagged?kind=profiles"
+    )
+
+    assert response.headers["location"] == "/admin/flagged?kind=profiles"
+    refreshed = await profiles.get_profile(session, profile.user_id)
+    await session.refresh(refreshed)
+    assert refreshed.status == ProfileStatus.REJECTED
+    assert "Снять с публикации" not in (await admin_client.get(f"/admin/users/{profile.user_id}")).text

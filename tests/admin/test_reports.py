@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from app.enums import MessageOrigin, ProfileStatus, ReportAction, ReportReason, ReportStatus
+from app.enums import Gender, MessageOrigin, ProfileStatus, ReportAction, ReportReason, ReportStatus
 from app.models import Profile, Report, User
 from app.services import chat, moderation, profiles
 from app.services.moderation import HIDE_PROFILE_NOTE
@@ -85,6 +85,7 @@ async def test_ban_user_hides_profile_from_catalog(admin_client, session, make_p
 
 async def test_admin_cannot_be_banned_through_a_report(admin_client, session, make_profile, admin):
     reporter = (await make_profile()).user
+    await make_profile(admin, gender=Gender.FEMALE)  # reports need a profile the reporter has seen
     report = await _report(session, reporter, admin)
     page = await admin_client.get("/admin/reports")
     assert 'value="ban_user"' not in page.text

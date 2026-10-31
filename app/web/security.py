@@ -1,6 +1,9 @@
-"""Security headers for every response (pure ASGI middleware, safe for streaming responses)."""
+"""Security headers for every response (pure ASGI middleware, safe for streaming responses) and
+redaction of login secrets from the server's access log."""
 
 from __future__ import annotations
+
+import logging
 
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -62,3 +65,29 @@ class SecurityHeadersMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_with_headers)
+
+
+ACCESS_LOGGER = "uvicorn.access"
+AUTH_PREFIX = "/auth/"
+
+
+class AccessLogRedaction(logging.Filter):
+    """Drops the query of ``/auth/*`` requests from uvicorn's access log lines: it carries login
+    credentials (signed Telegram Login Widget data, login tokens), and magic link tokens are in
+    the path. The record's arguments are ``(client, method, path_with_query, http_version, status)``."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str) and args[2].startswith(AUTH_PREFIX):
+            path = args[2].partition("?")[0]
+            if path.startswith(f"{AUTH_PREFIX}magic/"):
+                path = f"{AUTH_PREFIX}magic/…"
+            record.args = (args[0], args[1], path, args[3], args[4])
+        return True
+
+
+def install_access_log_redaction() -> None:
+    """Attach AccessLogRedaction to uvicorn's access logger (idempotent)."""
+    access_logger = logging.getLogger(ACCESS_LOGGER)
+    if not any(isinstance(item, AccessLogRedaction) for item in access_logger.filters):
+        access_logger.addFilter(AccessLogRedaction())

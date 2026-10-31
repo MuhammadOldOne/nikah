@@ -24,6 +24,7 @@ from app.services import guardians, interests, profiles
 from app.services.errors import DomainError, InvalidInput, ProfileNotActive, ProfileRequired
 
 PAGE_KEY = "catalog_page"
+SHOWN_KEY = "catalog_shown"  # user id of the card shown last: «Дальше» continues after it
 FILTERS_KEY = "catalog_filters"
 FILTER_DRAFT_KEY = "filter_draft"
 INTEREST_KEY = "interest_to"
@@ -70,6 +71,7 @@ async def show_catalog(
         if user.profile is not None and user.profile.status != ProfileStatus.ACTIVE:
             text += f"\n\nℹ️ {ProfileNotActive().message}"
         markup = keyboards.catalog_card(profile.user_id)
+        await state.update_data({SHOWN_KEY: profile.user_id})
     else:
         if total:
             text = "Вы посмотрели все анкеты 🌙 Новые появляются регулярно — загляните позже или начните сначала."
@@ -80,6 +82,22 @@ async def show_catalog(
         await edit(event, text, markup)
     else:
         await send(event, text, markup)
+
+
+async def _next_page(state: FSMContext, session: AsyncSession, user: User) -> int:
+    """The page after the card shown last, wherever it is now. Profiles may have left the list
+    meanwhile (one the user just reported, a hidden one): counting pages would skip a card."""
+    data = await state.get_data()
+    page = int(data.get(PAGE_KEY) or 1)
+    shown = data.get(SHOWN_KEY)
+    if shown is None:
+        return page + 1
+    try:
+        position = await profiles.catalog_position(session, user, _filters(data), shown)
+    except DomainError:
+        return page + 1
+    # Not in the list any more: the next card has moved up to the shown card's page.
+    return position + 1 if position is not None else page
 
 
 async def _ask_interest_message(callback: CallbackQuery, state: FSMContext, user: User, target_id: int) -> None:
@@ -211,8 +229,7 @@ async def on_catalog_action(
             await _apply_filter(callback, state, session, user, None)
             return
         case CatalogAction.NEXT:
-            page = int((await state.get_data()).get(PAGE_KEY) or 1) + 1
-            await state.update_data({PAGE_KEY: page})
+            await state.update_data({PAGE_KEY: await _next_page(state, session, user)})
         case CatalogAction.RESTART:
             await state.update_data({PAGE_KEY: 1})
         case CatalogAction.RESET_FILTER:

@@ -180,3 +180,38 @@ async def test_wizard_with_invalid_gender_shows_an_error(client, dev_login, make
     response = await client.post("/profile/new", data=profile_form(csrf_token=csrf, gender="other"))
     assert response.status_code == 422
     assert "Выберите значение из списка." in response.text
+
+
+async def test_counterpart_with_an_edit_under_review_is_not_shown(client, login_client, make_pair, session):
+    from app.schemas import ProfileUpdate
+    from app.services import interests
+
+    man, woman = await make_pair()
+    await interests.send_interest(session, man, woman.id)
+    await profiles.update_profile(session, man, ProfileUpdate(about="Непроверенный текст"))
+    await session.commit()
+    login_client(client, woman)
+
+    response = await client.get(f"/u/{man.id}")
+    assert response.status_code == 404
+    assert "Анкета временно недоступна: её проверяет модератор." in response.text
+    assert "Непроверенный текст" not in response.text
+    assert "Непроверенный текст" not in (await client.get("/interests")).text
+
+
+async def test_edit_refused_by_the_submission_limit_keeps_the_typed_text(client, dev_login, make_profile, session):
+    from app.schemas import ProfileUpdate
+
+    profile = await make_profile(gender=Gender.FEMALE)
+    for number in range(profiles.SUBMISSIONS_PER_HOUR):
+        await profiles.update_profile(session, profile.user, ProfileUpdate(about=f"Правка {number}"))
+    await session.commit()
+    await dev_login(client, profile.user)
+    csrf = await csrf_of(client, "/me/edit")
+    form = profile_form(csrf_token=csrf, about="Новый текст, который жалко потерять")
+
+    response = await client.post("/me/edit", data=form)
+
+    assert response.status_code == 422
+    assert "Анкету слишком часто отправляли на проверку" in response.text
+    assert "Новый текст, который жалко потерять" in response.text

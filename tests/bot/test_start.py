@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from app.bot import texts
 from app.bot.callbacks import CANCEL, LoginCb, WaliCb
+from app.bot.handlers import start
 from app.enums import Gender, LoginTokenState
 from app.models import User
 from app.services import auth, guardians
@@ -30,7 +31,15 @@ async def test_plain_start_creates_account_and_shows_principles_and_menu(harness
 
 async def test_unknown_payload_falls_back_to_greeting(harness):
     await harness.text(555_000_002, "/start ref_abc")
-    assert harness.last_text(555_000_002) == texts.GREETING
+    assert harness.last_text(555_000_002) == start.greeting()
+    assert texts.MODERATION_WITH_PREMODERATION in start.greeting()
+
+
+async def test_greeting_promises_premoderation_only_when_it_is_on(harness, override_settings):
+    override_settings(PREMODERATION=False)
+    await harness.text(555_000_003, "/start")
+    text = harness.last_text(555_000_003)
+    assert texts.MODERATION_WITHOUT_PREMODERATION in text and "Анкеты проверяет модератор" not in text
 
 
 async def test_login_deep_link_confirms_token_after_button(harness, session, make_user):

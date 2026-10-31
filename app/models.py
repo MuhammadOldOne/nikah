@@ -108,6 +108,8 @@ class User(Base):
         BigInteger, ForeignKey("conversations.id", ondelete="SET NULL", use_alter=True), index=True
     )
     last_seen_at: Mapped[datetime | None]
+    # Stored in the site's session cookie at login; raising it ends every web session of the user.
+    session_version: Mapped[int] = mapped_column(default=0, server_default=sql_text("0"))
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=func.now())
 
     profile: Mapped[Profile | None] = relationship(back_populates="user", passive_deletes=True)
@@ -357,4 +359,6 @@ class Outbox(Base):
         Index(
             "ix_outbox_pending", "next_attempt_at", postgresql_where=sql_text("sent_at IS NULL AND failed_at IS NULL")
         ),
+        # Recent events of one kind (rate limits, e.g. profile submissions per hour).
+        Index("ix_outbox_kind_created_at", "kind", "created_at"),
     )

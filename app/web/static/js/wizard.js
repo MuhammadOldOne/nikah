@@ -55,6 +55,7 @@
     }
   });
 
+  var submitted = false;
   form.addEventListener("submit", function (event) {
     for (var i = 0; i < steps.length; i++) {
       if (firstInvalid(steps[i])) {
@@ -64,7 +65,15 @@
         return;
       }
     }
+    // One submission per page: a double click must not send the profile twice.
+    if (submitted) {
+      event.preventDefault();
+      return;
+    }
+    submitted = true;
   });
+  // Coming back with the browser's Back button restores the page from the cache: allow sending again.
+  window.addEventListener("pageshow", function () { submitted = false; });
 
   // Gender-dependent wording («не был женат» / «не была замужем», «готов» / «готова»…).
   function applyGender(gender) {

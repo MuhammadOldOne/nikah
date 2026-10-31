@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from sqlalchemy import select
 
@@ -267,3 +269,78 @@ async def test_public_counts(session, make_profile, make_user):
     await make_profile(gender=Gender.FEMALE, status=ProfileStatus.PENDING)
     await make_profile(await make_user(is_banned=True), gender=Gender.MALE)
     assert await profiles.public_counts(session) == {Gender.MALE: 1, Gender.FEMALE: 2}
+
+
+async def test_concurrent_creation_reports_existing_profile(session, make_user):
+    """Two submits racing past the existence check: the loser gets ProfileAlreadyExists, not a
+    database error (which would end up as a 500 page)."""
+    from app.db import get_sessionmaker
+    from app.services import users
+
+    user = await make_user()
+    async with get_sessionmaker()() as first, get_sessionmaker()() as second:
+        await profiles.create_profile(first, await users.get_by_id(first, user.id), profile_data())
+        racing = asyncio.create_task(
+            profiles.create_profile(second, await users.get_by_id(second, user.id), profile_data())
+        )
+        await asyncio.sleep(0.3)  # the second INSERT now waits for the first transaction
+        await first.commit()
+        with pytest.raises(ProfileAlreadyExists):
+            await racing
+        await second.rollback()
+    assert await outbox_kinds(session) == ["profile.submitted"]
+
+
+async def test_counterparts_never_see_unapproved_content(session, make_pair):
+    """An interest or a chat lets the counterpart open the profile, but not an edit waiting for
+    moderation and not a profile a moderator took down."""
+    from app.enums import ReportAction
+    from app.schemas import ProfileUpdate
+    from app.services.errors import ProfileUnderReview
+
+    man, woman = await make_pair()
+    await interests.send_interest(session, man, woman.id, "Салам")
+    await profiles.update_profile(session, man, ProfileUpdate(about="Непроверенный текст о себе"))
+
+    with pytest.raises(ProfileUnderReview):
+        await profiles.get_viewable_profile(session, woman, man.id)
+    assert await interests.list_incoming(session, woman) == []
+    assert await interests.pending_incoming_count(session, woman) == 0
+    assert (await profiles.get_viewable_profile(session, man, man.id)).about == "Непроверенный текст о себе"
+
+    await profiles.approve(session, man.id)
+    assert (await profiles.get_viewable_profile(session, woman, man.id)).about == "Непроверенный текст о себе"
+    assert len(await interests.list_incoming(session, woman)) == 1
+
+    reporter = (await profiles.get_profile(session, woman.id)).user
+    report = await moderation.create_report(session, reporter, man.id, ReportReason.FAKE)
+    admin = await _admin(session)
+    await moderation.resolve_report(session, report.id, admin, ReportAction.HIDE_PROFILE)
+    with pytest.raises(ProfileUnderReview):
+        await profiles.get_viewable_profile(session, woman, man.id)
+    assert await interests.list_incoming(session, woman) == []
+
+
+async def _admin(session):
+    from app.models import User
+
+    admin = User(telegram_id=777000, first_name="Админ", is_admin=True)
+    session.add(admin)
+    await session.flush()
+    return admin
+
+
+async def test_resubmissions_are_limited_per_hour(session, make_profile, override_settings):
+    from app.schemas import ProfileUpdate
+    from app.services.errors import ProfileSubmissionLimitReached
+
+    user = (await make_profile()).user
+    for number in range(profiles.SUBMISSIONS_PER_HOUR):
+        await profiles.update_profile(session, user, ProfileUpdate(about=f"Правка {number}"))
+    with pytest.raises(ProfileSubmissionLimitReached):
+        await profiles.update_profile(session, user, ProfileUpdate(about="Ещё одна правка"))
+    assert (await profiles.get_profile(session, user.id)).about == f"Правка {profiles.SUBMISSIONS_PER_HOUR - 1}"
+    assert await outbox_kinds(session) == ["profile.submitted"] * profiles.SUBMISSIONS_PER_HOUR
+
+    override_settings(PREMODERATION=False)  # nothing reaches the admins: no limit
+    await profiles.update_profile(session, user, ProfileUpdate(about="Без премодерации"))

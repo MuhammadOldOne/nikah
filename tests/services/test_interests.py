@@ -7,7 +7,8 @@ from sqlalchemy import select, update
 from app.db import get_sessionmaker
 from app.enums import Gender, InterestStatus, ProfileStatus, ReportReason
 from app.models import Interest, Outbox
-from app.services import interests, moderation
+from app.schemas import ProfileUpdate
+from app.services import interests, moderation, profiles
 from app.services.errors import (
     InterestAlreadyExists,
     InterestDeclinedBefore,
@@ -222,3 +223,20 @@ async def test_list_incoming_history_statuses(session, make_pair):
     assert await interests.list_incoming(session, woman) == []
     history = await interests.list_incoming(session, woman, statuses=list(InterestStatus))
     assert [i.id for i in history] == [interest.id]
+
+
+async def test_interest_of_a_profile_taken_down_by_a_moderator_cannot_be_accepted(session, make_pair):
+    from app.models import Conversation
+
+    man, woman = await make_pair()
+    interest = await interests.send_interest(session, man, woman.id)
+    await profiles.reject(session, man.id, "Анкета похожа на ненастоящую.")
+
+    with pytest.raises(ProfileNotFound):
+        await interests.accept(session, interest.id, woman)
+    assert await session.scalar(select(Conversation)) is None
+
+    # Fixed and approved again: the interest can be answered.
+    await profiles.update_profile(session, man, ProfileUpdate(about="Исправленная анкета"))
+    await profiles.approve(session, man.id)
+    assert (await interests.accept(session, interest.id, woman)).id is not None

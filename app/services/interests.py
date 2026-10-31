@@ -15,7 +15,7 @@ from sqlalchemy.orm import selectinload
 from app.clock import utcnow
 from app.config import get_settings
 from app.enums import InterestStatus, ProfileStatus
-from app.models import Conversation, Interest, User
+from app.models import Conversation, Interest, Profile, User
 from app.schemas import InterestIn, first_error
 from app.services import chat, events
 from app.services.errors import (
@@ -30,7 +30,7 @@ from app.services.errors import (
     ProfileNotFound,
     UserBanned,
 )
-from app.services.profiles import get_profile
+from app.services.profiles import approved_content, get_profile, has_approved_content
 from app.services.relations import report_exists_between
 from app.services.stopwords import flag_reason
 
@@ -150,10 +150,13 @@ async def _lock_for_recipient(session: AsyncSession, interest_id: int, user: Use
 
 
 async def accept(session: AsyncSession, interest_id: int, user: User) -> Conversation:
-    """Recipient accepts: the interest becomes accepted and a conversation is created."""
+    """Recipient accepts: the interest becomes accepted and a conversation is created.
+
+    The sender's profile must have approved content: a profile a moderator rejected (or that waits
+    for moderation after an edit) cannot gain a chat through interests sent before."""
     interest = await _lock_for_recipient(session, interest_id, user)
-    sender = await session.get(User, interest.from_user_id)
-    if sender is None or sender.is_banned:
+    sender = await get_profile(session, interest.from_user_id)
+    if sender is None or sender.user.is_banned or not has_approved_content(sender):
         raise ProfileNotFound()
     if await chat.get_conversation_between(session, interest.from_user_id, interest.to_user_id):
         raise InterestAlreadyExists()
@@ -220,11 +223,18 @@ async def get_interest(session: AsyncSession, interest_id: int, user: User) -> I
 async def list_incoming(
     session: AsyncSession, user: User, statuses: Sequence[InterestStatus] = (InterestStatus.PENDING,)
 ) -> list[Interest]:
-    """Received interests (newest first) from non-banned senders, ``from_user.profile`` loaded."""
+    """Received interests (newest first), ``from_user.profile`` loaded. Interests of banned senders
+    and of senders whose profile content is not approved (edited, rejected) are not shown."""
     result = await session.scalars(
         select(Interest)
         .join(User, User.id == Interest.from_user_id)
-        .where(Interest.to_user_id == user.id, Interest.status.in_(statuses), User.is_banned.is_(False))
+        .join(Profile, Profile.user_id == Interest.from_user_id)
+        .where(
+            Interest.to_user_id == user.id,
+            Interest.status.in_(statuses),
+            User.is_banned.is_(False),
+            approved_content(),
+        )
         .options(selectinload(Interest.from_user).selectinload(User.profile))
         .order_by(Interest.id.desc())
     )
@@ -248,10 +258,12 @@ async def pending_incoming_count(session: AsyncSession, user: User) -> int:
         select(func.count())
         .select_from(Interest)
         .join(User, User.id == Interest.from_user_id)
+        .join(Profile, Profile.user_id == Interest.from_user_id)
         .where(
             Interest.to_user_id == user.id,
             Interest.status == InterestStatus.PENDING,
             User.is_banned.is_(False),
+            approved_content(),
         )
     )
     return count or 0

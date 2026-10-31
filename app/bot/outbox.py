@@ -5,6 +5,12 @@ seconds, locks due rows with FOR UPDATE SKIP LOCKED (several bot processes are s
 messages from current database data (payloads carry IDs only; rows that no longer exist are
 skipped) and sends them. Delivery is at least once.
 
+When Telegram cannot be reached (network or server errors, persistent flood control), the batch
+stops at that row and the worker pauses with a growing delay: an outage is not the row's fault,
+so no attempt is counted and nothing is given up, however long it lasts, and later messages never
+overtake earlier ones. Attempts (and giving up after events.MAX_ATTEMPTS) are for failures of
+one row only, such as a message that cannot be built.
+
 Building (DB reads + pure rendering in app.bot.render) is separate from sending.
 """
 
@@ -18,17 +24,26 @@ from dataclasses import dataclass
 from typing import TypeGuard
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNotFound, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNetworkError,
+    TelegramNotFound,
+    TelegramRetryAfter,
+    TelegramServerError,
+    TelegramUnauthorizedError,
+)
 from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot import render
-from app.bot.logutil import exc_summary
 from app.db import session_scope
 from app.enums import ConversationCloseReason, InterestStatus, ProfileStatus, ReportStatus
+from app.logutil import exc_summary
 from app.models import Conversation, Interest, Message, Outbox, User
-from app.services import auth, events, guardians, moderation, profiles, users
+from app.services import auth, chat, events, guardians, moderation, profiles, users
 from app.services.events import Event, EventKind
+from app.services.relations import open_conversation_partner_ids
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +52,10 @@ BATCH_SIZE = 20
 SEND_DELAY = 0.05  # about 20 messages per second, below Telegram's limit of 30
 MAX_FLOOD_RETRIES = 3
 HOUSEKEEPING_INTERVAL = 6 * 60 * 60.0
+OUTAGE_PAUSE_MIN = 5.0
+OUTAGE_PAUSE_MAX = 300.0
+# Errors that say nothing about the message itself: Telegram is unreachable or refuses everything.
+TELEGRAM_UNAVAILABLE = (TelegramNetworkError, TelegramServerError, TelegramRetryAfter, TelegramUnauthorizedError)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,8 +82,11 @@ async def _message_created(session: AsyncSession, row: Outbox) -> list[Delivery]
         return []  # deleted together with the sender's account
     recipient = await users.get_by_id(session, payload["recipient_id"])
     deliveries = []
-    if _notifiable(recipient) and recipient.id != sender.id:  # never echo to the sender
-        deliveries.append(Delivery.of(recipient.telegram_id, render.message_notification(sender, message)))
+    # A banned sender's queued messages are not pushed to the partner (wali copies still go out).
+    if _notifiable(recipient) and recipient.id != sender.id and not sender.is_banned:  # never echo to the sender
+        watched = await guardians.has_active_guardian(session, sender.id)
+        rendered = render.message_notification(sender, message, sender_has_guardian=watched)
+        deliveries.append(Delivery.of(recipient.telegram_id, rendered))
     participants = {sender.id: sender} | ({recipient.id: recipient} if recipient is not None else {})
     copied_to: set[int] = set()
     for link in payload.get("guardians", []):
@@ -93,6 +115,8 @@ async def _interest_created(session: AsyncSession, row: Outbox) -> list[Delivery
     sender = await users.get_by_id(session, interest.from_user_id)
     if not _notifiable(recipient) or sender is None or sender.is_banned or sender.profile is None:
         return []
+    if not profiles.has_approved_content(sender.profile):  # edited or rejected since: not shown to others
+        return []
     has_guardian = await guardians.has_active_guardian(session, sender.id)
     rendered = render.interest_notification(interest, sender.profile, has_guardian=has_guardian)
     return [Delivery.of(recipient.telegram_id, rendered)]
@@ -103,7 +127,9 @@ async def _interest_accepted(session: AsyncSession, row: Outbox) -> list[Deliver
     acceptor = await users.get_by_id(session, row.payload["to_user_id"])
     if not _notifiable(sender) or acceptor is None:
         return []
-    return [Delivery.of(sender.telegram_id, render.interest_accepted(acceptor, row.payload["conversation_id"]))]
+    watched = await guardians.has_active_guardian(session, acceptor.id)
+    rendered = render.interest_accepted(acceptor, row.payload["conversation_id"], acceptor_has_guardian=watched)
+    return [Delivery.of(sender.telegram_id, rendered)]
 
 
 async def _interest_declined(session: AsyncSession, row: Outbox) -> list[Delivery]:
@@ -154,19 +180,28 @@ async def _profile_moderated(session: AsyncSession, row: Outbox) -> list[Deliver
 
 async def _report_created(session: AsyncSession, row: Outbox) -> list[Delivery]:
     report = await moderation.get_report(session, row.payload["report_id"])
-    if report is None or report.status != ReportStatus.OPEN:
+    if report is None or report.status != ReportStatus.OPEN or report.reporter.is_banned:
         return []
     return await _to_admins(session, render.report_card(report))
 
 
 async def _guardian_linked(session: AsyncSession, row: Outbox) -> list[Delivery]:
+    """The ward is told who the wali is; the partners of the ward's open chats are told that
+    their messages are now copied to a wali (spec: the partner sees «Вали подключён»)."""
     link = await guardians.get_active_guardian(session, row.payload["ward_user_id"])
     if link is None or link.id != row.payload["guardian_id"] or link.guardian is None:
         return []
     ward = await users.get_by_id(session, row.payload["ward_user_id"])
-    if not _notifiable(ward):
+    if ward is None or ward.is_banned:
         return []
-    return [Delivery.of(ward.telegram_id, render.guardian_linked(link.guardian))]
+    deliveries = [Delivery.of(ward.telegram_id, render.guardian_linked(link.guardian))] if _notifiable(ward) else []
+    for partner_id in await open_conversation_partner_ids(session, ward.id):
+        conversation = await chat.get_conversation_between(session, ward.id, partner_id)
+        partner = await users.get_by_id(session, partner_id)
+        if conversation is not None and _notifiable(partner) and partner.id != link.guardian_user_id:
+            notice = render.guardian_linked_to_partner(ward, conversation.id)
+            deliveries.append(Delivery.of(partner.telegram_id, notice))
+    return deliveries
 
 
 _BUILDERS: dict[str, Callable[[AsyncSession, Outbox], Awaitable[list[Delivery]]]] = {
@@ -205,7 +240,13 @@ class OutboxWorker:
         self._batch_size = batch_size
         self._send_delay = send_delay
         self._wakeup = asyncio.Event()
-        self._stopping = False
+        self._stopped = asyncio.Event()
+        self._outage_pause = 0.0  # > 0 while Telegram is unreachable
+
+    @property
+    def telegram_unavailable(self) -> bool:
+        """True after a batch stopped because Telegram could not be reached."""
+        return self._outage_pause > 0
 
     def wake(self, _event: Event | None = None) -> None:
         """EventListener callback: process the outbox now."""
@@ -213,51 +254,72 @@ class OutboxWorker:
 
     def stop(self) -> None:
         """Ask ``run`` to return after the current batch."""
-        self._stopping = True
+        self._stopped.set()
         self._wakeup.set()
 
     async def run(self) -> None:
         logger.info("outbox worker started")
-        while not self._stopping:
+        while not self._stopped.is_set():
             self._wakeup.clear()
             try:
-                while await self.process_batch() >= self._batch_size and not self._stopping:
+                while (
+                    await self.process_batch() >= self._batch_size
+                    and not self.telegram_unavailable
+                    and not self._stopped.is_set()
+                ):
                     pass
             except Exception as exc:  # keep the worker alive; rows stay pending
                 logger.error("outbox batch failed: %s", exc_summary(exc))
-            if not self._stopping:
+            if self.telegram_unavailable:  # new events must not hammer Telegram: only stop() cuts it short
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self._stopped.wait(), self._outage_pause)
+            elif not self._stopped.is_set():
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(self._wakeup.wait(), self._poll_interval)
         logger.info("outbox worker stopped")
 
     async def process_batch(self) -> int:
-        """Deliver one batch of due rows in one transaction; returns how many rows were taken."""
+        """Deliver one batch of due rows in one transaction; returns how many rows were taken.
+
+        Stops at the first row Telegram cannot be reached for (see the module docstring)."""
         async with session_scope() as session:
             rows = await events.fetch_pending(session, limit=self._batch_size)
             for row in rows:
-                await self._process(session, row)
+                if not await self._process(session, row):
+                    self._outage_pause = min(max(self._outage_pause * 2, OUTAGE_PAUSE_MIN), OUTAGE_PAUSE_MAX)
+                    logger.warning("outbox: Telegram is unavailable, pausing delivery for %.0f s", self._outage_pause)
+                    break
+            else:
+                if self._outage_pause:
+                    logger.info("outbox: Telegram is reachable again, delivery resumed")
+                self._outage_pause = 0.0
         return len(rows)
 
-    async def _process(self, session: AsyncSession, row: Outbox) -> None:
+    async def _process(self, session: AsyncSession, row: Outbox) -> bool:
+        """Deliver one row. Returns False (row untouched) if Telegram could not be reached."""
         try:
             async with session.begin_nested():  # a failing query must not abort the whole batch
                 deliveries = await build_deliveries(session, row)
         except Exception as exc:
             logger.error("outbox %s (%s): building messages failed: %s", row.id, row.kind, exc_summary(exc))
             await events.mark_failed(session, row, f"build: {type(exc).__name__}")
-            return
+            return True
         try:
             for delivery in deliveries:
                 await self._send(row, delivery)
-        except Exception as exc:  # network or server errors: retry the row later with backoff
-            logger.warning("outbox %s (%s): delivery failed: %s", row.id, row.kind, type(exc).__name__)
+        except TELEGRAM_UNAVAILABLE as exc:
+            logger.warning("outbox %s (%s): Telegram unavailable: %s", row.id, row.kind, type(exc).__name__)
+            return False
+        except Exception as exc:  # unexpected and specific to this row: retry later with backoff
+            logger.error("outbox %s (%s): delivery failed: %s", row.id, row.kind, exc_summary(exc))
             await events.mark_failed(session, row, f"send: {type(exc).__name__}")
-            return
+            return True
         await events.mark_sent(session, row)
+        return True
 
     async def _send(self, row: Outbox, delivery: Delivery) -> None:
-        """Send one message. Flood control: wait and retry. A recipient who blocked the bot or a
-        message Telegram rejects is skipped (retrying cannot help). Other errors propagate."""
+        """Send one message. Flood control: wait and retry a few times. A recipient who blocked the
+        bot or a message Telegram rejects is skipped (retrying cannot help). Other errors propagate."""
         flood_retries = 0
         while True:
             try:

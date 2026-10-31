@@ -7,16 +7,32 @@ import unicodedata
 
 # Zero-width and bidi control characters used to smuggle hidden text.
 _INVISIBLE = dict.fromkeys(map(ord, "​‌‍‎‏⁠﻿‪‫‬‭‮"))
+_ZWJ = "\u200d"
 _SPACES = re.compile(r"[ \t\f\v  -   　]+")
 _MANY_NEWLINES = re.compile(r"\n{3,}")
 
 
+def _joins_emoji(value: str, index: int) -> bool:
+    """Whether the zero-width joiner at ``index`` glues an emoji sequence (👨‍👩‍👧, ❤️‍🔥)."""
+    before, after = value[index - 1 : index], value[index + 1 : index + 2]
+    emoji_before = before == "\ufe0f" or (before != "" and unicodedata.category(before) in ("So", "Sk"))
+    return emoji_before and after != "" and unicodedata.category(after) == "So"
+
+
 def _strip_controls(value: str, *, keep_newlines: bool) -> str:
-    value = unicodedata.normalize("NFC", value).translate(_INVISIBLE)
-    value = value.replace("\r\n", "\n").replace("\r", "\n")
-    return "".join(
-        ch for ch in value if (keep_newlines and ch == "\n") or ch in " \t" or unicodedata.category(ch)[0] != "C"
-    )
+    """Drop control and invisible characters. A zero-width joiner survives only inside an emoji
+    sequence: between letters or digits it would hide contacts and stop words from the checks."""
+    value = unicodedata.normalize("NFC", value).replace("\r\n", "\n").replace("\r", "\n")
+    kept = []
+    for index, ch in enumerate(value):
+        if ch == _ZWJ:
+            if _joins_emoji(value, index):
+                kept.append(ch)
+        elif ord(ch) not in _INVISIBLE and (
+            (keep_newlines and ch == "\n") or ch in " \t" or unicodedata.category(ch)[0] != "C"
+        ):
+            kept.append(ch)
+    return "".join(kept)
 
 
 def clean_line(value: str) -> str:

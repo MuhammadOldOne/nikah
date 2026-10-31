@@ -1,5 +1,6 @@
-// Login through the Telegram bot: open the deep link, then poll /auth/poll every 2 s
-// until the bot confirms (or 10 minutes pass), and follow the redirect.
+// Login through the Telegram bot: poll /auth/poll every 2 s from page load until the bot confirms
+// (or the token's 10 minutes pass), and follow the redirect. Polling does not wait for a click on
+// the button: the link may be opened on a phone («Telegram только на телефоне?»).
 (function () {
   "use strict";
 
@@ -12,14 +13,15 @@
   var pollUrl = root.dataset.pollUrl;
   var INTERVAL = 2000;
   var TIMEOUT = 10 * 60 * 1000;
-  var startedAt = null;
+  var startedAt = Date.now();
+  var stopped = false;
   var timer = null;
   var busy = false;
 
   function stop(message) {
     clearTimeout(timer);
     timer = null;
-    startedAt = null;
+    stopped = true;
     status.hidden = true;
     retry.hidden = false;
     if (message) retry.querySelector("p").textContent = message;
@@ -28,12 +30,12 @@
 
   function schedule() {
     clearTimeout(timer);
-    timer = setTimeout(poll, INTERVAL);
+    if (!stopped) timer = setTimeout(poll, INTERVAL);
   }
 
   function poll() {
-    if (busy) return;
-    if (startedAt && Date.now() - startedAt > TIMEOUT) {
+    if (busy || stopped) return;
+    if (Date.now() - startedAt > TIMEOUT) {
       stop();
       return;
     }
@@ -42,10 +44,11 @@
       .then(function (response) { return response.json(); })
       .then(function (data) {
         if (data.status === "ok") {
+          status.hidden = false;
           statusText.textContent = "Вход выполнен, открываем сайт…";
           window.location.assign(data.redirect || "/catalog");
         } else if (data.status === "pending") {
-          if (startedAt) schedule();
+          schedule();
         } else if (data.status === "failed") {
           stop(data.message);
         } else {
@@ -53,17 +56,16 @@
         }
       })
       .catch(function () {
-        statusText.textContent = "Нет связи с сервером, пробуем снова…";
-        if (startedAt) schedule();
+        if (!status.hidden) statusText.textContent = "Нет связи с сервером, пробуем снова…";
+        schedule();
       })
       .then(function () { busy = false; });
   }
 
-  function start() {
-    if (!startedAt) startedAt = Date.now();
+  function showWaiting() {
+    if (stopped) return;
     status.hidden = false;
     retry.hidden = true;
-    schedule();
   }
 
   button.addEventListener("click", function (event) {
@@ -71,14 +73,15 @@
       event.preventDefault();
       return;
     }
-    start();
+    showWaiting();
   });
 
   // Returning from Telegram: check right away instead of waiting for the next tick.
   document.addEventListener("visibilitychange", function () {
-    if (document.visibilityState === "visible" && startedAt) poll();
+    if (document.visibilityState === "visible") poll();
   });
 
-  // The page was reloaded while a login was in progress: keep waiting for the same token.
-  if (root.dataset.resume === "1") start();
+  // The page was reloaded while a login was in progress: show that we are still waiting.
+  if (root.dataset.resume === "1") showWaiting();
+  schedule();
 })();

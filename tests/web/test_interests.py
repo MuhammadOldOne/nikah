@@ -139,9 +139,12 @@ async def test_interest_errors_are_shown(client, dev_login, make_pair, override_
     man, woman = await make_pair()
     await dev_login(client, man)
     csrf = await csrf_of(client, f"/u/{woman.id}")
-    response = await client.post(f"/u/{woman.id}/interest", data={"csrf_token": csrf, "message": "звоните 89991234567"})
-    assert response.status_code == 303
-    assert "Уберите ссылки, телефоны" in (await client.get(f"/u/{woman.id}")).text
+    draft = "Ассаляму алейкум! Расскажу о себе и своей семье подробно. Мой номер 89991234567"
+    response = await client.post(f"/u/{woman.id}/interest", data={"csrf_token": csrf, "message": draft})
+    # The page comes back with the error next to the field and the typed message kept.
+    assert response.status_code == 422
+    assert 'id="interest-error" role="alert">Уберите ссылки, телефоны' in response.text
+    assert f'aria-invalid="true">{draft}</textarea>' in response.text
 
 
 async def test_report_from_profile_page(client, dev_login, make_pair, session):

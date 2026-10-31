@@ -13,10 +13,12 @@ from aiogram.exceptions import (
     TelegramForbiddenError,
     TelegramNetworkError,
     TelegramRetryAfter,
+    TelegramServerError,
 )
 from aiogram.methods import SendMessage
 from sqlalchemy import select, update
 
+from app.bot import render
 from app.bot.callbacks import AdminProfileCb, ChatCb, InterestCb
 from app.bot.outbox import OutboxWorker
 from app.clock import utcnow
@@ -105,7 +107,10 @@ async def test_web_message_goes_to_recipient_and_both_walis_never_to_sender(sess
 
     assert bot.to(man) == []
     [to_woman] = bot.to(woman)
-    assert to_woman.text == f"💬 <b>Ахмад</b> (#{man.id}):\nАс-саляму алейкум &lt;b&gt;!&lt;/b&gt;"
+    # The sender has a wali: the badge is in every notification of his messages.
+    assert to_woman.text == (
+        f"💬 <b>Ахмад</b> (#{man.id}):\nАс-саляму алейкум &lt;b&gt;!&lt;/b&gt;\n\n{render.GUARDIAN_BADGE}"
+    )
     reply, site = buttons(to_woman.reply_markup)
     assert ChatCb.unpack(reply.callback_data).conversation_id == conversation.id
     assert site.url == f"http://testserver/chats/{conversation.id}"
@@ -182,9 +187,35 @@ async def test_flood_control_waits_and_retries(session, bot, worker, chat_with_w
     assert row.sent_at is not None and row.attempts == 0
 
 
-async def test_network_error_schedules_retry_with_backoff(session, bot, worker, chat_with_walis):
+async def test_telegram_outage_pauses_delivery_without_giving_up(session, bot, worker, chat_with_walis):
+    """A long outage (connection refused, 5xx) must not burn the row's attempts: wali copies and
+    notifications are delivered once Telegram is back, in their original order."""
+    man, woman, conversation, _, wali_woman = chat_with_walis
+    outage = [TelegramNetworkError(_METHOD, "Cannot connect"), TelegramServerError(_METHOD, "Bad Gateway")] * 10
+    bot.fail(woman.telegram_id, *outage)
+    await chat.send_message(session, conversation.id, man, "Первое", MessageOrigin.WEB)
+    await chat.send_message(session, conversation.id, man, "Второе", MessageOrigin.WEB)
+    await session.commit()
+
+    for _ in range(len(outage)):  # far more than events.MAX_ATTEMPTS
+        await worker.process_batch()
+        assert worker.telegram_unavailable
+    rows = (await session.scalars(select(Outbox).where(Outbox.sent_at.is_(None)).order_by(Outbox.id))).all()
+    for row in rows:
+        await session.refresh(row)
+    assert [(row.attempts, row.failed_at, row.next_attempt_at <= utcnow()) for row in rows] == [(0, None, True)] * 2
+    assert bot.to(woman) == []  # the second message did not overtake the first
+
+    await worker.process_batch()
+
+    assert not worker.telegram_unavailable
+    assert [item.text.split("\n")[1] for item in bot.to(woman)] == ["Первое", "Второе"]
+    assert [item.text.rsplit(": ", 1)[-1] for item in bot.to(wali_woman)] == ["Первое", "Второе"]
+
+
+async def test_row_specific_failure_schedules_retry_with_backoff(session, bot, worker, chat_with_walis):
     man, woman, conversation, *_ = chat_with_walis
-    bot.fail(woman.telegram_id, TelegramNetworkError(_METHOD, "timeout"))
+    bot.fail(woman.telegram_id, RuntimeError("unexpected"))
     await chat.send_message(session, conversation.id, man, "Салам", MessageOrigin.WEB)
     await session.commit()
 
@@ -192,9 +223,10 @@ async def test_network_error_schedules_retry_with_backoff(session, bot, worker, 
 
     row = await _last_row(session)
     assert row.sent_at is None and row.attempts == 1
-    assert row.last_error == "send: TelegramNetworkError"
+    assert row.last_error == "send: RuntimeError"
     assert row.next_attempt_at > utcnow() + timedelta(seconds=5)
     assert await worker.process_batch() == 0  # not due yet
+    assert not worker.telegram_unavailable
 
 
 async def test_interest_created_accepted_and_declined(session, bot, worker, make_pair, make_profile):
@@ -297,6 +329,48 @@ async def test_guardian_linked_goes_to_ward(session, bot, worker, make_pair, mak
     assert bot.to(wali) == []
 
 
+async def test_wali_linked_mid_chat_is_disclosed_to_the_partner(
+    session, bot, worker, make_pair, make_conversation, make_user
+):
+    """The partner who keeps chatting from the bot must learn that a wali now reads along."""
+    man, woman = await make_pair()
+    conversation = await make_conversation(man, woman)
+    await chat.set_bot_active_conversation(session, man, conversation.id)
+    await _settle(session)
+    wali = await make_user(first_name="Юсуф")
+    await _link_guardian(session, woman, wali)
+
+    await worker.process_batch()
+
+    [notice] = bot.to(man)
+    assert (
+        notice.text
+        == f"👁 К переписке с <b>Фатима</b> (#{woman.id}) подключён вали: ваши сообщения в этом чате теперь видны вали."
+    )
+    assert ChatCb.unpack(buttons(notice.reply_markup)[0].callback_data).conversation_id == conversation.id
+    row = await _last_row(session)
+    assert row.payload["user_ids"] == sorted([man.id, woman.id, wali.id])
+
+    # Her messages and the acceptance of her interests carry the badge from now on.
+    await chat.send_message(session, conversation.id, woman, "Салам", MessageOrigin.WEB)
+    await session.commit()
+    await worker.process_batch()
+    assert bot.to(man)[-1].text.endswith("\n\n👁 Вали подключён — переписка видна вали")
+
+
+async def test_interest_accepted_by_a_ward_shows_the_badge(session, bot, worker, make_pair, make_user):
+    man, woman = await make_pair()
+    await _link_guardian(session, woman, await make_user())
+    interest = await interests.send_interest(session, man, woman.id)
+    await interests.accept(session, interest.id, woman)
+    await session.commit()
+
+    await worker.process_batch()
+
+    [accepted] = [item for item in bot.to(man) if "Ваш отклик принят" in item.text]
+    assert "👁 Вали подключён — переписка видна вали" in accepted.text
+
+
 async def test_deleted_recipient_is_skipped(session, bot, worker, make_pair):
     man, woman = await make_pair()
     await interests.send_interest(session, man, woman.id)
@@ -331,3 +405,20 @@ async def test_run_loop_wakes_on_notify_and_stops(session, bot, make_pair, make_
         worker.stop()
         await asyncio.wait_for(task, 5)
         await listener.stop()
+
+
+async def test_queued_cards_and_messages_of_a_banned_user_are_not_delivered(
+    session, bot, worker, chat_with_walis, make_user
+):
+    man, woman, conversation, _, wali_woman = chat_with_walis
+    admin = await make_user(is_admin=True)
+    await moderation.create_report(session, man, woman.id, ReportReason.INSULT)
+    await chat.send_message(session, conversation.id, man, "Сообщение перед баном", MessageOrigin.WEB)
+    await users.ban(session, man)
+    await session.commit()
+
+    await worker.process_batch()
+
+    assert bot.to(admin) == []  # the banned reporter's report card is not sent
+    assert not any("Сообщение перед баном" in item.text for item in bot.to(woman))
+    assert any("Сообщение перед баном" in item.text for item in bot.to(wali_woman))  # oversight copies still go

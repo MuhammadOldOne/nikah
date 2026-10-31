@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.bot import texts
 from app.bot.callbacks import CANCEL, FieldAction, FieldCb, ProfileAction, ProfileCb
@@ -97,28 +97,59 @@ async def test_cancel_leaves_wizard_and_menu_button_works_mid_wizard(harness, se
     assert await profiles.get_profile(session, user.id) is None
 
 
-async def test_edit_keeps_values_and_resubmits(harness, session, make_profile):
+async def test_edit_changes_one_field_and_resubmits(harness, session, make_profile):
     profile = await make_profile(gender=Gender.MALE, name="Ахмад", city="Казань")
     user = profile.user
     await harness.text(user, texts.MENU_PROFILE)
     await harness.press(user, button_data(harness.last_markup(user), "Изменить"))
 
-    assert "Сейчас: <i>Ахмад</i>" in harness.last_text(user)  # gender is not asked: it cannot change
-    await harness.press(user, FieldCb(field="name", action=FieldAction.KEEP).pack())
-    await harness.press(user, FieldCb(field="birth_year", action=FieldAction.KEEP).pack())
+    picker = [button.text for row in harness.last_markup(user).inline_keyboard for button in row]
+    assert "Имя или псевдоним: Ахмад" in picker and "Город: Казань" in picker
+    assert not any(text.startswith("Пол") for text in picker)  # gender cannot change
+    await harness.press(user, FieldCb(field="city", action=FieldAction.PICK).pack())
+    assert "Сейчас: <i>Казань</i>" in harness.last_text(user)
     await harness.text(user, "Уфа")
-    for field in ("marital_status", "children", "education", "employment", "wishes"):
-        await harness.press(user, FieldCb(field=field, action=FieldAction.KEEP).pack())
-    for field in ("height", "weight", "occupation", "nationality", "madhab", "prayer", "nikah_timeline", "relocation"):
-        await harness.press(user, _skip(field))
-    await harness.press(user, _skip("about"))
+    assert "Проверьте анкету" in harness.last_text(user) and "📍 Уфа" in harness.last_text(user)
+
+    await harness.press(user, ProfileCb(action=ProfileAction.MORE).pack())  # «Изменить ещё»
+    await harness.press(user, FieldCb(field="height", action=FieldAction.PICK).pack())
+    await harness.text(user, "180")
     await harness.press(user, ProfileCb(action=ProfileAction.SAVE).pack())
 
     updated = await session.scalar(
         select(Profile).where(Profile.user_id == user.id).execution_options(populate_existing=True)
     )
-    assert (updated.name, updated.city, updated.status) == ("Ахмад", "Уфа", ProfileStatus.PENDING)
+    assert (updated.name, updated.city, updated.height, updated.status) == (
+        "Ахмад",
+        "Уфа",
+        180,
+        ProfileStatus.PENDING,
+    )
     assert "отправлены на модерацию" in harness.last_text(user)
+    assert await session.scalar(select(func.count()).select_from(Outbox)) == 1  # one moderation card
+
+
+async def test_new_profile_can_skip_the_remaining_optional_fields(harness, session, make_user):
+    user = await make_user()
+    await harness.press(user, ProfileCb(action=ProfileAction.CREATE).pack())
+    await harness.press(user, _set("gender", "male"))
+    await harness.text(user, "Ахмад")
+    await harness.text(user, str(current_year() - 30))
+    await harness.text(user, "Казань")
+    for field, value in (("marital_status", "never_married"), ("children", "0"), ("education", "higher")):
+        await harness.press(user, _set(field, value))
+    await harness.press(user, _set("employment", "employed"))
+    assert "Готово, остальное позже" not in str(harness.last_markup(user))  # required step
+    await harness.text(user, "Ищу верующую и заботливую жену для крепкой семьи.")
+    await harness.text(user, "180")  # the first optional step (height) is answered
+
+    await harness.press(user, FieldCb(field="weight", action=FieldAction.FINISH).pack())
+    assert "Проверьте анкету" in harness.last_text(user)
+    await harness.press(user, ProfileCb(action=ProfileAction.SAVE).pack())
+    await harness.press(user, ProfileCb(action=ProfileAction.ADULT).pack())
+
+    profile = await profiles.get_profile(session, user.id)
+    assert (profile.height, profile.weight, profile.about) == (180, None, None)
 
 
 async def test_hide_and_show_profile(harness, session, make_profile):

@@ -58,8 +58,19 @@ class ProfileAlreadyExists(DomainError):
     default_message = "У вас уже есть анкета."
 
 
+class ProfileSubmissionLimitReached(DomainError):
+    default_message = "Анкету слишком часто отправляли на проверку. Сохранить изменения можно будет через час."
+
+
 class ProfileNotFound(NotFound):
     default_message = "Анкета не найдена или недоступна."
+
+
+class ProfileUnderReview(ProfileNotFound):
+    """A counterpart's profile whose current content is not approved (edited and re-submitted, or
+    rejected by a moderator): its content is not shown to anyone but the owner."""
+
+    default_message = "Анкета временно недоступна: её проверяет модератор."
 
 
 class ProfileNotActive(DomainError):
@@ -94,6 +105,10 @@ class InterestNotPending(DomainError):
     default_message = "На этот отклик уже ответили или его отозвали."
 
 
+class MessageRateLimited(DomainError):
+    default_message = "Вы отправляете сообщения слишком часто. Подождите минуту и попробуйте снова."
+
+
 class ConversationNotFound(NotFound):
     default_message = "Чат не найден."
 
@@ -124,6 +139,10 @@ class ReportToSelf(DomainError):
 
 class AlreadyReported(DomainError):
     default_message = "Вы уже отправили жалобу на этого пользователя. Модератор её рассмотрит."
+
+
+class ReportLimitReached(DomainError):
+    default_message = "Вы отправили много жалоб за сутки. Модераторы их рассмотрят, новую можно будет отправить позже."
 
 
 class ReportNotFound(NotFound):

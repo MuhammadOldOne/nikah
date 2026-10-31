@@ -109,6 +109,7 @@ def msk(value: datetime) -> str:
 
 
 GUARDIAN_BADGE = "👁 Вали подключён — переписка видна вали"
+GUARDIAN_COPY_TITLE = "👁 Копия переписки"
 
 
 def profile_card(profile: Profile, *, has_guardian: bool = False, about_limit: int | None = None) -> str:
@@ -239,9 +240,10 @@ def interest_card(interest: Interest, sender_profile: Profile, *, has_guardian: 
 # --- Outbox notifications ------------------------------------------------------------------------
 
 
-def message_notification(sender: User, message: Message) -> Rendered:
+def message_notification(sender: User, message: Message, *, sender_has_guardian: bool = False) -> Rendered:
+    badge = f"\n\n{GUARDIAN_BADGE}" if sender_has_guardian else ""
     return Rendered(
-        f"💬 {person_ref(sender)}:\n{esc(message.text)}",
+        f"💬 {person_ref(sender)}:\n{esc(message.text)}{badge}",
         keyboards.message_notification(message.conversation_id),
     )
 
@@ -249,7 +251,7 @@ def message_notification(sender: User, message: Message) -> Rendered:
 def guardian_copy(ward: User, partner: User | None, sender: User, message: Message) -> Rendered:
     """Copy for a wali; no reply buttons: the wali is not a participant."""
     return Rendered(
-        f"👁 Копия переписки: {person_ref(ward)} ↔ {person_ref(partner)}\n"
+        f"{GUARDIAN_COPY_TITLE}: {person_ref(ward)} ↔ {person_ref(partner)}\n"
         f"<b>{esc(person_name(sender))}</b>: {esc(message.text)}"
     )
 
@@ -261,9 +263,10 @@ def interest_notification(interest: Interest, sender_profile: Profile, *, has_gu
     )
 
 
-def interest_accepted(acceptor: User, conversation_id: int) -> Rendered:
+def interest_accepted(acceptor: User, conversation_id: int, *, acceptor_has_guardian: bool = False) -> Rendered:
+    badge = f"\n{GUARDIAN_BADGE}" if acceptor_has_guardian else ""
     return Rendered(
-        f"Ваш отклик принят 🤲 Теперь можно общаться.\nСобеседник: {person_ref(acceptor)}.",
+        f"Ваш отклик принят 🤲 Теперь можно общаться.\nСобеседник: {person_ref(acceptor)}.{badge}",
         keyboards.write(conversation_id),
     )
 
@@ -282,7 +285,9 @@ def conversation_closed(reason: ConversationCloseReason, partner: User | None) -
             verb = by_gender(gender_of(partner), "завершил", "завершила", "завершил(а)")
             text = f"🔒 {person_ref(partner)} {verb} общение. Чат закрыт."
         case ConversationCloseReason.USER_BANNED:
-            text = f"🔒 Чат закрыт: собеседник {person_ref(partner)} заблокирован модератором."
+            who = by_gender(gender_of(partner), "собеседник", "собеседница", "собеседник")
+            verb = by_gender(gender_of(partner), "заблокирован", "заблокирована", "заблокирован(а)")
+            text = f"🔒 Чат закрыт: {who} {person_ref(partner)} {verb} модератором."
         case ConversationCloseReason.ACCOUNT_DELETED:
             text = "🔒 Собеседник удалил аккаунт. Чат закрыт."
     return Rendered(text)
@@ -326,6 +331,14 @@ def report_card(report: Report) -> Rendered:
     if report.message is not None:
         lines.append(f"Сообщение: «{esc(_shorten(report.message.text, HISTORY_ITEM_LIMIT))}»")
     return Rendered("\n".join(lines), keyboards.admin_report(report.id))
+
+
+def guardian_linked_to_partner(ward: User, conversation_id: int) -> Rendered:
+    """For the ward's chat partner: from now on their messages in this chat are copied to the wali."""
+    return Rendered(
+        f"👁 К переписке с {person_ref(ward)} подключён вали: ваши сообщения в этом чате теперь видны вали.",
+        keyboards.write(conversation_id),
+    )
 
 
 def guardian_linked(guardian: User) -> Rendered:

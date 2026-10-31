@@ -4,7 +4,7 @@
   the bot calls ``confirm_login_token`` after the user presses a confirmation button; the site
   polls ``poll_login_token`` and logs the browser in (single use).
 - Magic link: the bot calls ``create_magic_link``; the site calls ``consume_magic_token``.
-- Telegram Login Widget: ``verify_telegram_widget``.
+- Telegram Login Widget: ``consume_widget_login`` (``verify_telegram_widget`` + single use).
 
 Tokens live 10 minutes and only their SHA-256 hashes are stored.
 """
@@ -17,10 +17,11 @@ import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clock import utcnow
@@ -31,7 +32,9 @@ from app.models import LoginToken, User
 from app.services.errors import TokenInvalid, UserBanned
 
 TOKEN_TTL = timedelta(minutes=10)
-WIDGET_MAX_AGE = timedelta(days=1)
+# Widget data arrives right after the user confirms in Telegram; the signed URL must not stay a
+# reusable credential (browser history, logs).
+WIDGET_MAX_AGE = timedelta(minutes=5)
 LOGIN_PREFIX = "login_"
 
 
@@ -187,3 +190,31 @@ def verify_telegram_widget(
         username=fields.get("username") or None,
         first_name=fields.get("first_name") or None,
     )
+
+
+async def consume_widget_login(
+    session: AsyncSession, data: Mapping[str, Any], bot_token: str, *, now: float | None = None
+) -> TelegramWidgetUser | None:
+    """Verify Telegram Login Widget data and accept each signature only once.
+
+    The used signature is kept (hashed) as a consumed ``widget`` login token until the data
+    expires anyway, so replaying the same URL — from the browser history or a log — fails.
+    """
+    widget_user = verify_telegram_widget(data, bot_token, now=now)
+    if widget_user is None:
+        return None
+    current = utcnow() if now is None else datetime.fromtimestamp(now, UTC)
+    auth_date = datetime.fromtimestamp(int(data["auth_date"]), UTC)
+    claimed = await session.scalar(
+        insert(LoginToken)
+        .values(
+            token_hash=_hash(f"widget:{data['hash']}"),
+            kind=LoginTokenKind.WIDGET,
+            expires_at=auth_date + WIDGET_MAX_AGE,
+            confirmed_at=current,
+            consumed_at=current,
+        )
+        .on_conflict_do_nothing(index_elements=[LoginToken.token_hash])
+        .returning(LoginToken.id)
+    )
+    return widget_user if claimed is not None else None

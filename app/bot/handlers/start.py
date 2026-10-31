@@ -31,8 +31,15 @@ _TOKEN = re.compile(r"[A-Za-z0-9_-]{16,64}")
 _USER_ID = re.compile(r"[0-9]{1,18}")
 
 
+def greeting() -> str:
+    """The first greeting; it promises premoderation only when it is switched on."""
+    premoderation = get_settings().PREMODERATION
+    moderation = texts.MODERATION_WITH_PREMODERATION if premoderation else texts.MODERATION_WITHOUT_PREMODERATION
+    return texts.GREETING.format(moderation=moderation)
+
+
 async def greet(message: Message, user: User) -> None:
-    text = texts.GREETING if user.profile is None else texts.GREETING_BACK
+    text = greeting() if user.profile is None else texts.GREETING_BACK
     await message.answer(text, reply_markup=keyboards.main_menu())
 
 

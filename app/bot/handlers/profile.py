@@ -48,6 +48,7 @@ from app.services import profiles, users
 from app.services.errors import DomainError, InvalidInput
 
 WIZARD_KEY = "wizard"
+PICKER_LABEL_LIMIT = 48  # «Поле: значение» on a button
 STEPS: tuple[str, ...] = PROFILE_REQUIRED_FIELDS + PROFILE_OPTIONAL_FIELDS
 CHOICE_FIELDS: dict[str, type[StrEnum]] = {
     "gender": Gender,
@@ -176,6 +177,7 @@ async def show_my_profile(event: Message | CallbackQuery, session: AsyncSession,
 async def start_wizard(
     event: Message | CallbackQuery, state: FSMContext, session: AsyncSession, user: User, mode: Mode
 ) -> None:
+    """Creating walks through every step; editing asks which field to change."""
     await exit_flow(state)
     profile = await profiles.get_profile(session, user.id)
     if mode == Mode.CREATE and profile is not None:
@@ -183,17 +185,37 @@ async def start_wizard(
         return
     if profile is None:
         mode = Mode.CREATE
-    draft = _draft_from(profile) if mode == Mode.EDIT and profile is not None else {}
-    wizard = Wizard(mode=mode, step=_steps(mode)[0], draft=draft)
+    if mode == Mode.EDIT and profile is not None:
+        wizard = Wizard(mode=mode, step=_steps(mode)[0], draft=_draft_from(profile))
+        await _pick_field(event, state, wizard, texts.WIZARD_EDIT_INTRO)
+        return
+    wizard = Wizard(mode=mode, step=_steps(mode)[0])
     await state.set_state(ProfileForm.filling)
-    await send(event, texts.WIZARD_INTRO if mode == Mode.CREATE else texts.WIZARD_EDIT_INTRO)
+    await send(event, texts.WIZARD_INTRO)
     await _ask(event, state, wizard)
+
+
+async def _pick_field(event: Message | CallbackQuery, state: FSMContext, wizard: Wizard, text: str) -> None:
+    """Editing: one button per field with its current value; the chosen one is asked next."""
+    gender = wizard.gender
+    fields = []
+    for name in wizard.steps:
+        label = f"{_title(name, gender)}: {_display(name, wizard.draft.get(name), gender)}"
+        fields.append((name, label if len(label) <= PICKER_LABEL_LIMIT else label[: PICKER_LABEL_LIMIT - 1] + "…"))
+    wizard.question_id = None
+    await _store(state, wizard)
+    await state.set_state(ProfileForm.picking)
+    await send(event, text, keyboards.field_picker(fields))
 
 
 async def _ask(event: Message | CallbackQuery, state: FSMContext, wizard: Wizard) -> None:
     name, gender = wizard.step, wizard.gender
     optional = name in PROFILE_OPTIONAL_FIELDS
-    position = f"Шаг {wizard.steps.index(name) + 1} из {len(wizard.steps)}" + (" · необязательно" if optional else "")
+    if wizard.mode == Mode.CREATE:
+        position = f"Шаг {wizard.steps.index(name) + 1} из {len(wizard.steps)}"
+    else:
+        position = "Изменение анкеты"
+    position += " · необязательно" if optional else ""
     text = f"<i>{position}</i>\n<b>{_title(name, gender)}</b>"
     if hint := HINTS.get(name):
         text += f"\n{hint}"
@@ -215,11 +237,16 @@ async def _ask(event: Message | CallbackQuery, state: FSMContext, wizard: Wizard
 
 
 async def _advance(event: Message | CallbackQuery, state: FSMContext, wizard: Wizard) -> None:
+    """Creating: the next step (the summary after the last one). Editing: back to the summary."""
     index = wizard.steps.index(wizard.step) + 1
-    if index < len(wizard.steps):
+    if wizard.mode == Mode.CREATE and index < len(wizard.steps):
         wizard.step = wizard.steps[index]
         await _ask(event, state, wizard)
         return
+    await _summary(event, state, wizard)
+
+
+async def _summary(event: Message | CallbackQuery, state: FSMContext, wizard: Wizard) -> None:
     data = await _validated_or_reask(event, state, wizard)
     if data is None:
         return
@@ -227,7 +254,8 @@ async def _advance(event: Message | CallbackQuery, state: FSMContext, wizard: Wi
     await _store(state, wizard)
     await state.set_state(ProfileForm.confirm)
     card = render.profile_card(Profile(**data.model_dump()))
-    await send(event, f"<b>Проверьте анкету</b>\n\n{card}", keyboards.wizard_summary())
+    markup = keyboards.wizard_summary(editing=wizard.mode == Mode.EDIT)
+    await send(event, f"<b>Проверьте анкету</b>\n\n{card}", markup)
 
 
 async def _validated_or_reask(
@@ -268,7 +296,18 @@ async def on_text_answer(message: Message, state: FSMContext, bot: Bot) -> None:
 
 async def on_field_button(callback: CallbackQuery, callback_data: FieldCb, state: FSMContext) -> None:
     wizard = await _load(state)
-    if wizard is None or await state.get_state() != ProfileForm.filling.state or callback_data.field != wizard.step:
+    current = await state.get_state()
+    if wizard is not None and callback_data.action == FieldAction.PICK:
+        if current != ProfileForm.picking.state or callback_data.field not in wizard.steps:
+            await callback.answer(texts.STALE_BUTTON)
+            return
+        await callback.answer()
+        await set_buttons(callback, None)
+        wizard.step = callback_data.field
+        await state.set_state(ProfileForm.filling)
+        await _ask(callback, state, wizard)
+        return
+    if wizard is None or current != ProfileForm.filling.state or callback_data.field != wizard.step:
         await callback.answer(texts.STALE_BUTTON)
         return
     name = wizard.step
@@ -283,6 +322,11 @@ async def on_field_button(callback: CallbackQuery, callback_data: FieldCb, state
             pass
         case FieldAction.CLEAR if name in PROFILE_OPTIONAL_FIELDS:
             wizard.draft[name] = None
+        case FieldAction.FINISH if wizard.mode == Mode.CREATE and name in PROFILE_OPTIONAL_FIELDS:
+            await callback.answer()
+            await edit(callback, f"{message_html(callback)}\n\n✅ Остальное — позже")
+            await _summary(callback, state, wizard)
+            return
         case _:
             await callback.answer(texts.STALE_BUTTON)
             return
@@ -316,9 +360,10 @@ def _consent_text() -> str:
 
 def _adult_text(gender: Gender | None) -> str:
     status = by_gender(gender, "не женаты", "не замужем", "не состоите в браке")
+    spouse = by_gender(gender, "супругу", "супруга", "супруга(у)")
     return (
         f"<b>Последний шаг</b>\nПодтвердите, что вам исполнилось 18 лет, вы {status} "
-        "и ищете супруга(у) для никаха. «Истина» — только для никаха."
+        f"и ищете {spouse} для никаха. «Истина» — только для никаха."
     )
 
 
@@ -340,6 +385,12 @@ async def _restart(callback: CallbackQuery, state: FSMContext, session: AsyncSes
     wizard = await _wizard_at(callback, state, ProfileForm.confirm)
     if wizard is not None:
         await start_wizard(callback, state, session, user, wizard.mode)
+
+
+async def _edit_more(callback: CallbackQuery, state: FSMContext) -> None:
+    wizard = await _wizard_at(callback, state, ProfileForm.confirm)
+    if wizard is not None and wizard.mode == Mode.EDIT:
+        await _pick_field(callback, state, wizard, texts.WIZARD_PICK_FIELD)
 
 
 async def _consent(callback: CallbackQuery, state: FSMContext, session: AsyncSession, user: User) -> None:
@@ -424,6 +475,8 @@ async def on_profile_action(
             await _save(callback, state, session, user)
         case ProfileAction.RESTART:
             await _restart(callback, state, session, user)
+        case ProfileAction.MORE:
+            await _edit_more(callback, state)
         case ProfileAction.CONSENT:
             await _consent(callback, state, session, user)
         case ProfileAction.ADULT:

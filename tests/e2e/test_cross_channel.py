@@ -190,6 +190,9 @@ def test_site_and_bot_stay_in_sync(server: dict[str, str]) -> None:
     assert not any(texts["siteText"] in item["text"] for item in to_brother)
 
     assert any("Вали подключён" in item["text"] for item in _to(drains["wali"], tg_sister))
+    # Her chat partner is told in Telegram too: his messages are copied to the wali from now on.
+    [notice] = _to(drains["wali"], tg_brother)
+    assert "подключён вали" in notice["text"] and "Мариям" in notice["text"]
 
     # The message written on the site under the wali's eye: one event, delivered to the partner in
     # Telegram and copied to her wali, nothing to the author.

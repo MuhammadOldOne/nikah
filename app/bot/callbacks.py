@@ -25,12 +25,15 @@ class ProfileAction(StrEnum):
     RESTART = "restart"
     CONSENT = "consent"
     ADULT = "adult"
+    MORE = "more"  # editing: change another field
 
 
 class FieldAction(StrEnum):
     SET = "set"
     KEEP = "keep"
     CLEAR = "clear"
+    PICK = "pick"  # editing: the field to change
+    FINISH = "finish"  # creating: skip the remaining optional fields
 
 
 class CatalogAction(StrEnum):

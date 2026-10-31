@@ -74,6 +74,13 @@ async def touch_last_seen(session: AsyncSession, user: User) -> None:
         await session.flush()
 
 
+async def end_web_sessions(session: AsyncSession, user: User) -> None:
+    """Log the user out of the website on every device (site sessions are signed cookies, so
+    they are invalidated by raising ``session_version``). The bot is not affected."""
+    user.session_version += 1
+    await session.flush()
+
+
 def is_admin(user: User) -> bool:
     return user.is_admin or user.telegram_id in get_settings().ADMIN_TELEGRAM_IDS
 
@@ -128,9 +135,11 @@ async def ban(session: AsyncSession, user: User) -> None:
 
 
 async def unban(session: AsyncSession, user: User) -> None:
-    """Lift the ban. Closed conversations and cancelled interests stay as they are."""
+    """Lift the ban. Closed conversations and cancelled interests stay as they are, and web
+    sessions opened before the ban stay ended (the person logs in again)."""
     user.is_banned = False
     user.banned_at = None
+    user.session_version += 1
     await session.flush()
 
 

@@ -96,7 +96,8 @@ def field_step(
     has_value: bool,
     columns: int = 2,
 ) -> InlineKeyboardMarkup:
-    """Buttons of one wizard step: choices (if any), keep/skip/clear and cancel."""
+    """Buttons of one wizard step: choices (if any), keep/skip/clear, «Готово» for the optional
+    steps of a new profile, and cancel."""
     rows = _chunks(
         [_cb(text, FieldCb(field=field, action=FieldAction.SET, value=value).pack()) for value, text in choices],
         columns,
@@ -107,17 +108,27 @@ def field_step(
     if optional:
         text = "🧹 Очистить" if editing and has_value else "⏭ Пропустить"
         extra.append(_cb(text, FieldCb(field=field, action=FieldAction.CLEAR).pack()))
-    return _markup(*rows, extra, [cancel_button()])
-
-
-def wizard_summary() -> InlineKeyboardMarkup:
-    return _markup(
-        [
-            _cb("✅ Сохранить", ProfileCb(action=ProfileAction.SAVE).pack()),
-            _cb("✏️ Заново", ProfileCb(action=ProfileAction.RESTART).pack()),
-        ],
-        [cancel_button()],
+    finish = (
+        [_cb("✅ Готово, остальное позже", FieldCb(field=field, action=FieldAction.FINISH).pack())]
+        if optional and not editing
+        else []
     )
+    return _markup(*rows, extra, finish, [cancel_button()])
+
+
+def field_picker(fields: Iterable[tuple[str, str]]) -> InlineKeyboardMarkup:
+    """Editing: one button per field, (field, «Поле: текущее значение»)."""
+    rows = [[_cb(text, FieldCb(field=field, action=FieldAction.PICK).pack())] for field, text in fields]
+    return _markup(*rows, [cancel_button()])
+
+
+def wizard_summary(*, editing: bool) -> InlineKeyboardMarkup:
+    again = (
+        _cb("✏️ Изменить ещё", ProfileCb(action=ProfileAction.MORE).pack())
+        if editing
+        else _cb("✏️ Заново", ProfileCb(action=ProfileAction.RESTART).pack())
+    )
+    return _markup([_cb("✅ Сохранить", ProfileCb(action=ProfileAction.SAVE).pack()), again], [cancel_button()])
 
 
 def consent() -> InlineKeyboardMarkup:

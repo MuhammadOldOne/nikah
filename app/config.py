@@ -63,6 +63,12 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"SECRET_KEY must be set to a random value of at least {MIN_SECRET_KEY_LENGTH} characters when ENV=prod"
             )
+        # The dev key is public: anyone could sign a session cookie. Fail closed on a real (https)
+        # site that runs in dev mode by mistake, e.g. when ENV is missing from .env.
+        if self.SECRET_KEY.get_secret_value() == DEV_SECRET_KEY and self.SITE_URL.startswith("https://"):
+            raise ValueError(
+                "the development SECRET_KEY cannot be used for an https:// SITE_URL: set ENV=prod and SECRET_KEY"
+            )
         self.DEV_LOGIN_ENABLED = self.DEV_LOGIN_ENABLED and not is_prod
         if self.SESSION_COOKIE_SECURE is None:
             self.SESSION_COOKIE_SECURE = is_prod
