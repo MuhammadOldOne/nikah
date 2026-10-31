@@ -339,7 +339,10 @@ browser to resync (it re-fetches `list_messages(after_id=…)`).
   loop and breaks the asyncpg pool); `login_client(client, user) -> csrf_token`;
   helper `tests.conftest.session_cookie(data)`.
 - Each test directory needs an `__init__.py` (test packages: `tests/services`, `tests/web`,
-  `tests/bot`, `tests/admin`). Mock the aiogram `Bot`; never call api.telegram.org.
+  `tests/bot`, `tests/admin`, `tests/e2e`). Mock the aiogram `Bot`; never call api.telegram.org.
+- `tests/e2e` (skipped unless `E2E=1`): a real uvicorn on the dev DB and port 8000, Playwright for
+  Node (`cross_channel.js`) and the bot's real handlers/outbox worker with a recording Bot API
+  (`python -m tests.e2e.telegram_side`). Proves site ↔ bot sync end to end.
 
 ## 11. File ownership
 

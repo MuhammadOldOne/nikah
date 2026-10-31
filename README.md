@@ -106,6 +106,17 @@ TEST_DATABASE_URL=postgresql+asyncpg://nikah:nikah@127.0.0.1:5432/nikah_test .ve
 замокан), `tests/admin` (админка и скрипты). Линтер: `pip install ruff`, затем `ruff check .` и
 `ruff format --check .`.
 
+Сквозной тест «сайт ↔ бот» в настоящем браузере (`tests/e2e`) по умолчанию пропускается. Ему нужны
+Node.js с Playwright и свободный порт 8000. Тест мигрирует dev-базу `nikah` (другая —
+`E2E_DATABASE_URL`), запускает сайт и проходит сценарий: две анкеты через мастер, модерация, отклик,
+живой чат, ответ из Telegram (настоящий код бота, Telegram замокан), подключение вали и доставка
+уведомлений воркером бота. Аккаунты с Telegram ID 9200000001–9200000004 удаляются в начале каждого
+прогона. Скриншоты — в `docs/screenshots/e2e-*.png`.
+
+```bash
+E2E=1 TEST_DATABASE_URL=postgresql+asyncpg://nikah:nikah@127.0.0.1:5432/nikah_test .venv/bin/pytest -q tests/e2e
+```
+
 ## Структура
 
 ```
