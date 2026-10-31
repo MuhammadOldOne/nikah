@@ -29,10 +29,10 @@
       <summary aria-label="Действия с чатом">{{ m.icon('more') }}</summary>
       <div class="chat__menu-panel">
         {% if is_open %}
-        <form method="post" action="/chats/{{ conversation.id }}/close" data-confirm="Завершить общение? Писать в этот чат больше будет нельзя, начать заново тоже не получится.">
+        <form method="post" action="/chats/{{ conversation.id }}/close" data-confirm="Завершить общение? {{ close_note }}">
           {{ m.csrf_field() }}
           <h3>Завершить общение</h3>
-          <p class="small muted mb-0">Чат закроется для обоих, переписка останется в истории.</p>
+          <p class="small muted mb-0">Чат закроется для обоих, переписка останется в истории. {{ close_note }}</p>
           <button class="btn btn-secondary" type="submit">{{ m.icon('x') }} Завершить общение</button>
         </form>
         <hr class="sep mt-0 mb-0">

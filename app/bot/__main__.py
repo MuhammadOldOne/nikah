@@ -3,10 +3,14 @@
 Runs long polling, the outbox worker (woken by PostgreSQL NOTIFY, polling every 5 s as a
 fallback) and periodic housekeeping in one process. SIGINT/SIGTERM stop polling (in-flight
 updates finish), the worker finishes its current batch, then connections are closed.
+
+``python -m app.bot --clear-commands`` removes this bot's command menu and exits (a rollback to
+the legacy bot: docs/CUTOVER.md).
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import contextlib
 import logging
@@ -15,8 +19,9 @@ import signal
 from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramServerError, TelegramUnauthorizedError
 from aiogram.utils.token import TokenValidationError
+from sqlalchemy.exc import SQLAlchemyError
 
-from app.bot.dispatcher import create_bot, create_dispatcher, set_commands, telegram_session
+from app.bot.dispatcher import clear_commands, create_bot, create_dispatcher, set_commands, telegram_session
 from app.bot.outbox import OutboxWorker, housekeeping
 from app.config import get_settings
 from app.db import dispose_engine, session_scope
@@ -66,7 +71,7 @@ async def stop_serving(dispatcher: Dispatcher, serving: asyncio.Task[None]) -> N
         serving.cancel()
 
 
-async def run() -> None:
+def _bot() -> Bot:
     token = get_settings().TELEGRAM_TOKEN.get_secret_value()
     if not token:
         raise SystemExit("TELEGRAM_TOKEN is not set: the bot cannot start.")
@@ -75,9 +80,38 @@ async def run() -> None:
     except ValueError as exc:
         raise SystemExit(str(exc)) from None
     try:
-        bot = create_bot(token, session=session)
+        return create_bot(token, session=session)
     except TokenValidationError:
         raise SystemExit("TELEGRAM_TOKEN is malformed: the bot cannot start.") from None
+
+
+async def clear(bot: Bot) -> None:
+    """Remove the command menu for everyone and for every admin (ADMIN_TELEGRAM_IDS, plus the
+    admins flagged in the database when it can be reached)."""
+    admin_ids = set(get_settings().ADMIN_TELEGRAM_IDS)
+    try:
+        async with session_scope() as session:
+            admin_ids |= set(await users.admin_telegram_ids(session))
+    except (OSError, SQLAlchemyError) as exc:
+        logger.warning("database unavailable (%s): only ADMIN_TELEGRAM_IDS are cleared", type(exc).__name__)
+    try:
+        await clear_commands(bot, sorted(admin_ids))
+    except TelegramUnauthorizedError:
+        raise SystemExit("Telegram rejected TELEGRAM_TOKEN.") from None
+    logger.info("the command menu was removed")
+
+
+async def run_clear() -> None:
+    bot = _bot()
+    try:
+        await clear(bot)
+    finally:
+        await bot.session.close()
+        await dispose_engine()
+
+
+async def run() -> None:
+    bot = _bot()
     dispatcher = create_dispatcher()
     worker = OutboxWorker(bot)
     listener = EventListener()
@@ -116,8 +150,11 @@ async def run() -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(prog="python -m app.bot")
+    parser.add_argument("--clear-commands", action="store_true", help="remove the command menu and exit")
+    args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    asyncio.run(run())
+    asyncio.run(run_clear() if args.clear_commands else run())
 
 
 if __name__ == "__main__":

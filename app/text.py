@@ -8,8 +8,17 @@ from typing import Protocol
 
 from app.enums import Gender
 
-# Zero-width and bidi control characters used to smuggle hidden text.
-_INVISIBLE = dict.fromkeys(map(ord, "​‌‍‎‏⁠﻿‪‫‬‭‮"))
+# Zero-width and bidi control characters used to smuggle hidden text, and characters that render
+# as nothing (or a blank) although they are letters, symbols or marks: the combining grapheme
+# joiner, Hangul fillers, the braille blank, Khmer/Mongolian invisible vowels and selectors and the
+# text variation selectors (VS15/VS16 stay: they style emoji).
+_INVISIBLE = dict.fromkeys(
+    [
+        *map(ord, "\u200b\u200c\u200d\u200e\u200f\u2060\ufeff\u202a\u202b\u202c\u202d\u202e"),
+        *map(ord, "\u034f\u115f\u1160\u3164\uffa0\u2800\u17b4\u17b5\u180b\u180c\u180d\u180f"),
+        *range(0xFE00, 0xFE0E),
+    ]
+)
 _ZWJ = "\u200d"
 _SPACES = re.compile(r"[ \t\f\v  -   　]+")
 _MANY_NEWLINES = re.compile(r"\n{3,}")
@@ -62,7 +71,8 @@ CONTACT_PLACEHOLDER = "[скрыто свидетелем]"
 
 _TLDS = (
     "ru|рф|su|com|net|org|info|biz|me|io|co|app|dev|site|online|store|shop|xyz|top|club|pro|link|"
-    "live|life|tk|ua|by|kz|uz|tj|kg|az|am|ge|de|uk|us|tv|cc|ly|gg|to|ws|ink|space|website|рус|ру|ком|орг"
+    "live|life|tk|ua|by|kz|uz|tj|kg|az|am|ge|de|uk|us|tv|cc|ly|gg|to|ws|ink|space|website|"
+    "ai|bio|ee|eu|fm|gd|gl|gy|lt|lv|pl|рус|ру|ком|орг"
 )
 # "site точка ру", "site dot com", "site[.]ru", "site(.)ru"
 _WORD_DOT = r"(?:\s*(?:\(|\[)\s*(?:\.|точка|dot)\s*(?:\)|\])\s*|\s+(?:точка|тчк|dot)\s+)"
@@ -84,8 +94,11 @@ _CONTACT_PATTERNS = (
         rf"(?<![\w@.-])[a-z0-9][a-z0-9-]+(?:{_PLAIN_DOT}[a-z0-9-]{{2,}})*{_PLAIN_DOT}(?:{_TLDS})\b(?:[/?#]\S*)?"
     ),
     re.compile(rf"(?<![\w@.-])[\w-]{{2,}}{_WORD_DOT}(?:{_TLDS})\b(?:[/?#]\S*)?"),
-    # @usernames (Telegram, Instagram, …), also "@ name".
-    re.compile(r"(?<![\w@.])@\s?(?=[a-z0-9_.]*[a-z])[a-z0-9_][a-z0-9_.]{2,}"),
+    # Any latin host with a path (link-in-bio and shortener hosts on other TLDs: linktr.ee/…, is.gd/…).
+    re.compile(r"(?<![\w@.-])[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.[a-z]{2,6}/[\w-]\S*"),
+    # @usernames (Telegram, Instagram, …), also "@ name" and glued to a word ("тг@ivanov", as the
+    # legacy filter did); a real e-mail is matched above and the overlapping spans become one.
+    re.compile(r"(?<![@.])@\s?(?=[a-z0-9_.]*[a-z])[a-z0-9_][a-z0-9_.]{2,}"),
     # Local phone numbers: 123-45-67.
     re.compile(r"(?<!\d)\d{3}[ -]\d{2}[ -]\d{2}(?!\d)"),
 )
@@ -95,18 +108,66 @@ _DIGIT_RUN = re.compile(rf"\+?\d(?:{_SEPARATORS}{{0,3}}\d)*")
 _DATE = re.compile(r"(?<!\d)(?:0?[1-9]|[12]\d|3[01])[./](?:0?[1-9]|1[0-2])[./](?:\d{4}|\d{2})(?!\d)")
 _PHONE_MIN_DIGITS = 10
 _ONLY_SEPARATORS = re.compile(r"[\W_]*")
+# Cyrillic and Greek letters that look like latin ones. Folded for matching only, inside words that
+# mix them with latin letters ("ivаnov" with a Cyrillic «а», "t.mе") or that follow an "@" and
+# are made of look-alikes only ("@сосо"): plain Russian words are never folded, so "Казани.Со" is
+# not read as a domain.
+_LOOKALIKES = str.maketrans(
+    "аеёіїјкморстухѕԁԛԝһӏвньαβεηικνορτυχ",
+    "aeeiijkmopctyxsdqwhlbhbabenikvoptux",
+)
+_WORD = re.compile(r"\w+")
+# What does not split a word for a reader is dropped from the folded copy: combining marks
+# (accents, keycaps ⃣, variation selectors), format characters and the invisible ones of _INVISIBLE.
+_DROPPED_CATEGORIES = frozenset({"Mn", "Me", "Cf"})
+
+
+def _fold_char(ch: str) -> str:
+    if ord(ch) in _INVISIBLE:
+        return ""
+    digit = None if ch.isascii() else unicodedata.digit(ch, None)
+    if digit is not None:
+        return str(digit)
+    if ch.isascii():
+        return ch.lower()
+    piece = unicodedata.normalize("NFKD", unicodedata.normalize("NFKC", ch).lower())
+    return "".join(part for part in piece if unicodedata.category(part) not in _DROPPED_CATEGORIES)
+
+
+def _fold_lookalikes(folded: str) -> str:
+    """Latin look-alikes as latin letters in mixed-script words (one character for one, so the
+    source map stays valid)."""
+
+    def fold(match: re.Match[str]) -> str:
+        word = match.group(0)
+        latin = word.translate(_LOOKALIKES)
+        if any("a" <= ch <= "z" for ch in word):
+            return latin
+        after_at = folded[max(match.start() - 2, 0) : match.start()].rstrip().endswith("@")
+        return latin if after_at and latin.isascii() else word
+
+    return _WORD.sub(fold, folded)
 
 
 def _folded(value: str) -> tuple[str, list[int]]:
-    """``value`` folded for matching, and for every folded character the index of its source."""
+    """``value`` folded for matching (compatibility forms, any digit as ASCII, lowercase, no accents
+    or invisible characters, latin look-alikes in mixed words), and for every folded character the
+    index of its source."""
     chars: list[str] = []
     sources: list[int] = []
     for index, ch in enumerate(value):
-        digit = None if ch.isascii() else unicodedata.digit(ch, None)
-        piece = str(digit) if digit is not None else unicodedata.normalize("NFKC", ch).lower()
+        piece = _fold_char(ch)
         chars.extend(piece)
         sources.extend([index] * len(piece))
-    return "".join(chars), sources
+    return _fold_lookalikes("".join(chars)), sources
+
+
+def _mark_end(value: str, end: int) -> int:
+    """``end`` moved past the marks that belong to the last character of a match (keycap ⃣,
+    variation selectors…), so a hidden contact leaves none of them behind."""
+    while end < len(value) and not _fold_char(value[end]):
+        end += 1
+    return end
 
 
 def _contact_spans(value: str) -> list[tuple[int, int]]:
@@ -120,7 +181,9 @@ def _contact_spans(value: str) -> list[tuple[int, int]]:
         if sum(ch.isdigit() for ch in match.group(0)) >= _PHONE_MIN_DIGITS:
             found.append(match.span())
     spans: list[tuple[int, int]] = []
-    for start, end in sorted((sources[start], sources[end - 1] + 1) for start, end in found if end > start):
+    for start, end in sorted(
+        (sources[start], _mark_end(value, sources[end - 1] + 1)) for start, end in found if end > start
+    ):
         # Overlapping matches, or contacts separated only by spaces/punctuation, become one span.
         if spans and (start <= spans[-1][1] or _ONLY_SEPARATORS.fullmatch(value, spans[-1][1], start)):
             spans[-1] = (spans[-1][0], max(spans[-1][1], end))

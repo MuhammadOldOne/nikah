@@ -13,12 +13,13 @@ from aiogram.client.session.base import BaseSession
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.storage.base import BaseStorage
-from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
+from aiogram.fsm.storage.memory import SimpleEventIsolation
 from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat, ErrorEvent
 
 from app.bot import texts
 from app.bot.handlers import create_router
 from app.bot.middlewares import CommitBeforeTelegram, DbSessionMiddleware, UserMiddleware
+from app.bot.storage import DatabaseStorage
 from app.config import get_settings
 from app.logutil import exc_summary
 
@@ -69,10 +70,10 @@ async def on_error(event: ErrorEvent) -> bool:
 
 
 def create_dispatcher(storage: BaseStorage | None = None) -> Dispatcher:
-    """Dispatcher with an in-memory FSM (dialog progress is short-lived; durable state such as
-    the active chat lives in the database). Updates of one user are processed one at a time,
-    so double taps cannot race inside a dialog."""
-    dispatcher = Dispatcher(storage=storage or MemoryStorage(), events_isolation=SimpleEventIsolation())
+    """Dispatcher whose dialog state lives in the database (app.bot.storage): a dialog in progress
+    survives a restart. Updates of one user are processed one at a time, so double taps cannot race
+    inside a dialog."""
+    dispatcher = Dispatcher(storage=storage or DatabaseStorage(), events_isolation=SimpleEventIsolation())
     dispatcher.update.outer_middleware(DbSessionMiddleware())
     user_middleware = UserMiddleware()
     dispatcher.message.outer_middleware(user_middleware)
@@ -94,3 +95,14 @@ async def set_commands(bot: Bot, admin_ids: Iterable[int] = ()) -> None:
             await bot.set_my_commands(_commands(texts.ADMIN_COMMANDS), scope=BotCommandScopeChat(chat_id=admin_id))
         except TelegramAPIError as exc:  # e.g. an admin who never opened the bot
             logger.info("admin commands not set for one admin: %s", type(exc).__name__)
+
+
+async def clear_commands(bot: Bot, admin_ids: Iterable[int] = ()) -> None:
+    """Remove the command menu ``set_commands`` registered (a rollback to the legacy bot, which never
+    sets one: otherwise /stop or /delete in the menu would be relayed into chats as text)."""
+    await bot.delete_my_commands(scope=BotCommandScopeAllPrivateChats())
+    for admin_id in admin_ids:
+        try:
+            await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=admin_id))
+        except TelegramAPIError as exc:
+            logger.info("admin commands not removed for one admin: %s", type(exc).__name__)

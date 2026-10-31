@@ -23,7 +23,7 @@ from app.bot.callbacks import AccountCb
 from app.config import get_settings
 from app.db import session_scope
 from app.models import User
-from app.services import users
+from app.services import meta, users
 from app.services.errors import PermissionDenied, WitnessOnly
 
 if TYPE_CHECKING:
@@ -36,6 +36,11 @@ Handler = Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]]
 # The unit of work of the update being handled in this task (None outside updates, e.g. in the
 # outbox worker, which shares the Bot).
 _update_session: ContextVar[AsyncSession | None] = ContextVar("bot_update_session", default=None)
+
+
+def current_update_session() -> AsyncSession | None:
+    """The unit of work of the update being handled in this task, if any."""
+    return _update_session.get()
 
 
 async def _reply(event: TelegramObject, text: str) -> None:
@@ -119,7 +124,9 @@ class UserMiddleware(BaseMiddleware):
         session = data["session"]
         if chat.type != ChatType.PRIVATE:
             # Never post profiles into groups: only the witness buttons and the witness's text work there.
-            if chat.id != get_settings().WITNESS_CHAT_ID:
+            # The group's new id counts too after Telegram upgraded it to a supergroup.
+            configured = get_settings().WITNESS_CHAT_ID
+            if configured is None or chat.id not in (configured, await meta.witness_chat_id(session)):
                 return None
             member = await _witness_chat_member(session, sender)
             if member is None:

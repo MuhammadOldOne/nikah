@@ -25,7 +25,7 @@ from app.bot.states import CatalogForm
 from app.bot.ui import edit, exit_flow, send, set_buttons
 from app.models import Profile, User
 from app.schemas import CatalogFilters, first_error
-from app.services import guardians, interests, profiles
+from app.services import chat, guardians, interests, profiles
 from app.services.errors import DomainError, InvalidInput, ProfileNotFound, ProfilePending, ProfileRequired
 
 FILTERS_KEY = "catalog_filters"
@@ -107,27 +107,65 @@ async def _target_page(state: FSMContext, session: AsyncSession, user: User, cal
     return position - 1 if position is not None else callback_data.page - 1
 
 
-async def start_interest(callback: CallbackQuery, state: FSMContext, user: User, number: int) -> None:
-    """«Написать (заинтересоваться)»: ask for an optional message (send_interest re-checks every rule)."""
+async def _interest_target(callback: CallbackQuery, session: AsyncSession, user: User, number: int) -> Profile | None:
+    """The profile an interest button points at, once the read-only checks of send_interest pass;
+    otherwise the callback is answered with the reason (before any message is asked for)."""
     try:
-        profiles.require_active(user.profile)  # fail fast, before asking for a message
+        profiles.require_active(user.profile)
+        target = await profiles.get_profile_by_number(session, number)
+        if target is None:
+            raise ProfileNotFound()
+        await interests.check_can_send(session, user, target.user_id)
     except ProfilePending:
         await callback.answer(texts.NOT_APPROVED, show_alert=True)
-        return
+        return None
     except DomainError as exc:
         await callback.answer(exc.message, show_alert=True)
+        return None
+    return target
+
+
+async def start_interest(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    user: User,
+    number: int,
+    *,
+    one_tap: bool = False,
+) -> None:
+    """«Написать (заинтересоваться)»: refused at once if the interest cannot be sent; otherwise an
+    optional message is asked for. While the person has an open chat, any text goes to that chat
+    (LEGACY_BOT.md §2.7), so the interest is sent at once without a message, like the legacy
+    one-tap button (``one_tap``: an old br:int button)."""
+    target = await _interest_target(callback, session, user, number)
+    if target is None:
+        return
+    with_chat = bool(await chat.open_conversations(session, user))
+    if one_tap or with_chat:
+        try:
+            await interests.send_interest(session, user, target.user_id)
+        except DomainError as exc:
+            await callback.answer(exc.message, show_alert=True)
+            return
+        sent = texts.INTEREST_SENT.format(number=target.number)
+        await callback.answer(f"{sent} {texts.INTEREST_SENT_WHILE_CHATTING}" if with_chat else sent, show_alert=True)
         return
     await exit_flow(state)
     await state.set_state(CatalogForm.interest_message)
     await state.update_data({INTEREST_KEY: number})
     await callback.answer()
-    await send(callback, texts.INTEREST_MESSAGE_PROMPT, keyboards.interest_message())
+    await send(callback, texts.INTEREST_MESSAGE_PROMPT, keyboards.interest_message(number))
 
 
 async def _send_interest(
-    event: Message | CallbackQuery, state: FSMContext, session: AsyncSession, user: User, text: str | None
+    event: Message | CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    user: User,
+    number: int | None,
+    text: str | None,
 ) -> None:
-    number = (await state.get_data()).get(INTEREST_KEY)
     target: Profile | None = await profiles.get_profile_by_number(session, number) if number else None
     if target is None:
         await exit_flow(state)
@@ -139,7 +177,7 @@ async def _send_interest(
         await send(
             event,
             f"⚠️ {esc(exc.message)}\nИсправьте сообщение или нажмите «Без сообщения».",
-            keyboards.interest_message(),
+            keyboards.interest_message(target.number),
         )
         return
     except DomainError as exc:
@@ -147,11 +185,19 @@ async def _send_interest(
         await send(event, esc(exc.message))
         return
     await exit_flow(state)
-    await send(event, f"Ваш отклик анкете №{target.number} отправлен. Когда поступит ответ, бот сообщит.")
+    await send(event, texts.INTEREST_SENT.format(number=target.number))
 
 
 async def on_interest_message(message: Message, state: FSMContext, session: AsyncSession, user: User) -> None:
-    await _send_interest(message, state, session, user, message.text)
+    number = (await state.get_data()).get(INTEREST_KEY)
+    if number and await chat.open_conversations(session, user):
+        # A chat opened after the question was asked: the text may be meant for it, so it goes nowhere.
+        await exit_flow(state)
+        await message.answer(
+            texts.INTEREST_MESSAGE_NOT_SENT.format(number=number), reply_markup=keyboards.interest_message(number)
+        )
+        return
+    await _send_interest(message, state, session, user, number, message.text)
 
 
 def _parse_age(text: str) -> dict[str, Any]:
@@ -218,11 +264,13 @@ async def on_catalog_action(
         return
     match action:
         case CatalogAction.INTEREST:
-            await start_interest(callback, state, user, callback_data.number)
-        case CatalogAction.NO_MESSAGE if current_state == CatalogForm.interest_message.state:
+            await start_interest(callback, state, session, user, callback_data.number)
+        case CatalogAction.NO_MESSAGE:
+            # The button names the profile; buttons sent before it did rely on the dialog.
+            number = callback_data.number or (await state.get_data()).get(INTEREST_KEY)
             await callback.answer()
             await set_buttons(callback, None)
-            await _send_interest(callback, state, session, user, None)
+            await _send_interest(callback, state, session, user, number, None)
         case CatalogAction.REPORT:
             await callback.answer()
             await report.ask_reason(callback, callback_data.number)

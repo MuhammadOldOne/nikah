@@ -1,6 +1,7 @@
 """Bot handlers. Routers are created per dispatcher (tests build several) and checked in order:
-the witness buttons first (they also work in the witness group), then — in private chats only,
-behind the consent gate — commands and menu, dialog states, the chat relay and fallbacks last."""
+the witness buttons first (they also work in the witness group), the admin commands of the witness
+group, then — in private chats only, behind the consent gate — commands and menu, dialog states,
+the chat relay and fallbacks last."""
 
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ def private_chat(_event: TelegramObject, event_chat: Chat | None = None) -> bool
 def create_router() -> Router:
     root = Router(name="bot")
     root.include_router(witness.create_router())
+    root.include_router(admin.create_group_router())
     private = Router(name="private")
     private.message.filter(private_chat)
     private.callback_query.filter(private_chat)

@@ -45,7 +45,7 @@ docker compose run --rm -v /opt/legacy/data.db:/legacy/data.db:ro web \
 
 | Старая таблица → новая | Правила |
 |---|---|
-| `users` → `users` | `telegram_id = user_id`, `username = tg_username` (без `@`), `is_banned = banned`, `created_at`. `is_admin` — `role = 'admin'` или id из `ADMIN_TELEGRAM_IDS`. `consent_at` пусто: согласие (152-ФЗ) бот и сайт спросят при первом заходе. |
+| `users` → `users` | `telegram_id = user_id`, `username = tg_username` (без `@`), `is_banned = banned`, `created_at`. `is_admin` — `role = 'admin'` или id из `ADMIN_TELEGRAM_IDS` (этот флаг остаётся и после правки `.env`: снимать права — `make_admin --revoke`, DEPLOY.md §12). `consent_at` пусто: согласие (152-ФЗ) бот и сайт спросят при первом заходе. |
 | `profiles` → `profiles` | `number = id`; пол `m`/`f` → брат/сестра; `birth_year = год(created_at) − age`; город, национальность, «о себе», `wishes = partner_wishes` — как есть. Статус: `approved` → опубликована, `pending` → на модерации, `rejected` → отклонена, `paused` → скрыта. `submitted_at = created_at`, `approved_at = updated_at` у одобренных. Семейное положение, дети, образование, занятость — пустые: анкета неполная, владельцу предложат дополнить. |
 | `interests` → `interests` | id сохраняется, анкеты заменяются их владельцами, статус как есть, без сообщения. |
 | `chats` → `conversations` | id сохраняется, пара упорядочивается. Открыт — `opened_at`; закрытый чат — `closed_at` с причиной «завершён участником». Ссылка на принятый отклик пары, если он есть; время последнего сообщения. |

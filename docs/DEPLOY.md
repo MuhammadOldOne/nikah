@@ -241,8 +241,10 @@ getent hosts example.ru   # должен показать IP сервера (и�
    `WEB_HOST_PORT=8010` и тот же порт в конфиге nginx.
 2. Конфиг сайта для nginx — [`deploy/nginx/nikah.conf`](../deploy/nginx/nikah.conf). В нём уже
    настроено всё, что нужно живому чату (Server-Sent Events): `proxy_buffering off`, HTTP/1.1 к
-   приложению, долгий `proxy_read_timeout`, заголовки `X-Forwarded-*`. Замените в нём `example.ru` и
-   подключите:
+   приложению, долгий `proxy_read_timeout`, заголовки `X-Forwarded-*`. Журнал доступа пишется без
+   строки запроса (`nikah_noquery`), а одноразовые ссылки входа `/auth/magic/…` не пишутся совсем: в
+   адресах входа есть токены и данные виджета Telegram (id, имя), их нельзя хранить в логах — не
+   меняйте `access_log` на формат по умолчанию. Замените в конфиге `example.ru` и подключите:
 
    ```bash
    sed 's/example\.ru/ВАШ_ДОМЕН/g' deploy/nginx/nikah.conf > /etc/nginx/sites-available/nikah.conf
@@ -268,11 +270,18 @@ getent hosts example.ru   # должен показать IP сервера (и�
 ## 9. Вход через виджет Telegram (BotFather `/setdomain`)
 
 Вход по кнопке «Войти через Telegram» (ссылка в бота) работает сразу после запуска нового бота.
-Чтобы включить ещё и виджет Telegram Login:
+Виджет Telegram Login — дополнительный способ входа. **Включайте его только после переноса**
+(CUTOVER.md, шаг 6): виджету не нужен бот, и до переноса через него можно было бы войти на сайт и
+создать анкету — тогда перенос с `--commit` откажется работать («в новой базе уже есть данные»), а
+номер такой анкеты совпал бы с номером перенесённой.
 
-1. В @BotFather: `/setdomain` → выберите @nikah_istina_bot → отправьте `example.ru`.
-2. В `.env`: `TELEGRAM_WIDGET_ENABLED=true`.
-3. `docker compose up -d` (контейнеры пересоздадутся с новыми настройками).
+1. В @BotFather: `/setdomain` → выберите @nikah_istina_bot → отправьте `example.ru` (это можно сделать
+   заранее: без `TELEGRAM_WIDGET_ENABLED=true` сайт виджет не показывает).
+2. После шага 6 CUTOVER.md: в `.env` `TELEGRAM_WIDGET_ENABLED=true`.
+3. `docker compose up -d web` (пересоздаётся только сайт).
+
+До переноса держите `TELEGRAM_WIDGET_ENABLED=false` и не запускайте `docker compose up -d` без списка
+сервисов: он запустил бы и новый бот (раздел 10).
 
 ## 10. Первый запуск и переход со старого бота
 
@@ -296,8 +305,15 @@ getent hosts example.ru   # должен показать IP сервера (и�
 
 ## 12. Администраторы
 
-Права админа есть у всех из `ADMIN_TELEGRAM_IDS`. Выдать их ещё кому-то без перезапуска (человек
-должен сначала нажать `/start` в боте):
+Права админа есть у всех из `ADMIN_TELEGRAM_IDS` и у тех, кому их выдали командой ниже (флаг в базе).
+**Перенос из старого бота записывает этот флаг** всем, кто при переносе был в `ADMIN_TELEGRAM_IDS` или
+имел роль `admin` в старой базе (LEGACY_BOT.md §4). Поэтому, чтобы снять права с такого человека,
+мало убрать его из `.env`: выполните ещё `python -m scripts.make_admin <Telegram ID> --revoke` (ниже).
+Кто имеет права, видно в админке: https://example.ru/admin/users (пометка «админ»). Пока права не
+сняты, человек получает карточки модерации и жалобы, а если `WITNESS_CHAT_ID` не задан, — копии всех
+переписок.
+
+Выдать права ещё кому-то без перезапуска (человек должен сначала нажать `/start` в боте):
 
 ```bash
 docker compose exec web python -m scripts.make_admin 123456789
@@ -410,4 +426,6 @@ docker compose run --rm --no-deps web alembic history | head   # были ли �
 | Режим Caddy: `bind: address already in use` для `:80` | Порты заняты nginx: нужен режим nginx (разделы 4, 8). |
 | 502 Bad Gateway | `web` не запустился (`docker compose logs web`) или nginx смотрит не на тот порт (`WEB_HOST_PORT`). |
 | `password authentication failed` после смены `POSTGRES_PASSWORD` | Пароль задаётся только при создании базы. Верните старый или смените его в базе: `docker compose exec db psql -U nikah -c "ALTER ROLE nikah PASSWORD '...'"`. |
+| В логах бота `the witness group became a supergroup: set WITNESS_CHAT_ID=…` | Telegram превратил группу свидетелей в супергруппу (новый id). Бот уже шлёт копии и принимает кнопки по новому id; впишите его в `WITNESS_CHAT_ID` в `.env` и `docker compose up -d bot`. |
+| В логах бота `flood control for one chat` | Telegram ограничивает частоту сообщений в одну группу (около 20 в минуту): копии свидетелю придут с задержкой, ни одна не теряется; переписку участников это не задерживает. |
 | Живой чат не обновляется | Caddy: в `Caddyfile` должно остаться `flush_interval -1`. nginx: `proxy_buffering off` и `proxy_http_version 1.1` из `deploy/nginx/nikah.conf`, `text/event-stream` не в `gzip_types`. |

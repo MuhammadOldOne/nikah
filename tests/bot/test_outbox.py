@@ -138,15 +138,22 @@ async def test_chat_not_found_is_skipped_without_retry(session, bot, worker, cha
     assert row.sent_at is not None
 
 
-async def test_flood_control_waits_and_retries(session, bot, worker, chat_with_walis):
-    man, woman, conversation, *_ = chat_with_walis
+async def test_flood_control_of_one_chat_defers_the_row_without_resending_or_counting(
+    session, bot, worker, chat_with_walis
+):
+    man, woman, conversation, wali_man, wali_woman = chat_with_walis
     bot.fail(woman.telegram_id, TelegramRetryAfter(SEND_METHOD, "Too Many Requests", retry_after=0))
     await chat.send_message(session, conversation.id, man, "Салам", MessageOrigin.WEB)
     await session.commit()
 
     await worker.process_batch()
+    assert bot.to(woman) == [] and not worker.telegram_unavailable
+    row = await _last_row(session)
+    assert row.sent_at is None and row.attempts == 0  # deferred, not failed
+    await worker.process_batch()
 
     assert len(bot.to(woman)) == 1
+    assert len(bot.to(wali_man)) == 1 and len(bot.to(wali_woman)) == 1  # the walis got their copies once
     row = await _last_row(session)
     assert row.sent_at is not None and row.attempts == 0
 

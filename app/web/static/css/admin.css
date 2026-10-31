@@ -10,9 +10,11 @@
   --accent: #0e5a48;
   --accent-text: #ffffff;
   --ok: #1d7a44;
+  --on-ok: #ffffff;
   --warn: #9a5b00;
   --warn-bg: #fff3d6;
   --danger: #b3261e;
+  --on-danger: #ffffff;
   --danger-bg: #fde8e6;
   --mark: #ffe08a;
   --radius: 8px;
@@ -31,9 +33,11 @@
     --accent: #3fb594;
     --accent-text: #08201a;
     --ok: #5cc98a;
+    --on-ok: #08201a;
     --warn: #f0b34a;
     --warn-bg: #3a2c10;
     --danger: #ff8a80;
+    --on-danger: #2a0d08;
     --danger-bg: #3d1a17;
     --mark: #8a6d12;
   }
@@ -132,7 +136,7 @@ mark {
   padding: 0 6px;
   border-radius: 999px;
   background: var(--danger);
-  color: #fff;
+  color: var(--on-danger);
   font-size: 0.8rem;
   text-align: center;
 }
@@ -484,7 +488,7 @@ a.adm-tile:hover {
 .adm-btn--ok {
   background: var(--ok);
   border-color: var(--ok);
-  color: #fff;
+  color: var(--on-ok);
 }
 
 .adm-btn--warn {

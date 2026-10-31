@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from pydantic import ValidationError
-from sqlalchemy import ColumnElement, and_, exists, func, or_, select
+from sqlalchemy import ColumnElement, and_, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -68,33 +68,27 @@ async def get_relation(session: AsyncSession, viewer: User, other_user_id: int) 
     return PairRelation(interest=interest, conversation=conversation)
 
 
-async def send_interest(
-    session: AsyncSession, from_user: User, to_user_id: int, message: str | None = None
-) -> Interest:
-    """Send an interest with an optional message (≤500 chars, no contacts).
-
-    Rules: sender not banned, has given consent and has an ACTIVE profile (ProfileRequired /
-    ProfilePending / ProfileRejected / ProfileHidden); the recipient's profile is ACTIVE, of the
-    opposite gender, owner not banned, no report between the two (else ProfileNotFound); no pending
-    interest in either direction and no open conversation for the pair (InterestAlreadyExists); no
-    conversation of the pair closed by the witness (InterestBlockedByWitness); the sender's earlier
-    interest to this person was not declined (InterestDeclinedBefore) or accepted
-    (InterestSentBefore) — a cancelled one may be sent again; at most INTEREST_DAILY_LIMIT
-    interests per sender in a rolling 24 hours (cancelled ones count).
-    """
+def _check_sender(from_user: User, to_user_id: int) -> None:
     if from_user.is_banned:
         raise UserBanned()
     if from_user.consent_at is None:
         raise ConsentRequired()
     if to_user_id == from_user.id:
         raise InterestToSelf()
-    try:
-        clean_message = InterestIn(message=message).message
-    except ValidationError as exc:
-        raise InvalidInput(first_error(exc)) from exc
-    # Serialize everything that concerns the two users (pair rules, the sender's daily limit).
-    await lock_users(session, from_user.id, to_user_id)
 
+
+def _closed_by_witness(user_id: int, other_id: int) -> ColumnElement[bool]:
+    """Whether the witness ever closed a conversation of the pair (decision 18)."""
+    low, high = sorted((user_id, other_id))
+    return exists().where(
+        Conversation.user_a_id == low,
+        Conversation.user_b_id == high,
+        Conversation.close_reason == ConversationCloseReason.CLOSED_BY_WITNESS,
+    )
+
+
+async def _check_pair(session: AsyncSession, from_user: User, to_user_id: int) -> None:
+    """The rules of ``send_interest`` that concern the sender, the recipient and the pair."""
     own = require_active(await get_profile(session, from_user.id))
     target = await get_profile(session, to_user_id)
     if (
@@ -111,13 +105,7 @@ async def send_interest(
         session, from_user.id, to_user_id
     ):
         raise InterestAlreadyExists()
-    low, high = sorted((from_user.id, to_user_id))
-    closed_by_witness = exists().where(
-        Conversation.user_a_id == low,
-        Conversation.user_b_id == high,
-        Conversation.close_reason == ConversationCloseReason.CLOSED_BY_WITNESS,
-    )
-    if await session.scalar(select(closed_by_witness)):
+    if await session.scalar(select(_closed_by_witness(from_user.id, to_user_id))):
         raise InterestBlockedByWitness()
     earlier = set(
         (
@@ -141,6 +129,38 @@ async def send_interest(
     )
     if (sent_recently or 0) >= get_settings().INTEREST_DAILY_LIMIT:
         raise InterestLimitReached()
+
+
+async def check_can_send(session: AsyncSession, from_user: User, to_user_id: int) -> None:
+    """Read-only: raise what ``send_interest`` would raise for this pair right now (except for the
+    message), without writing or locking. Lets the bot and the site refuse before asking for a
+    message; ``send_interest`` checks everything again."""
+    _check_sender(from_user, to_user_id)
+    await _check_pair(session, from_user, to_user_id)
+
+
+async def send_interest(
+    session: AsyncSession, from_user: User, to_user_id: int, message: str | None = None
+) -> Interest:
+    """Send an interest with an optional message (≤500 chars, no contacts).
+
+    Rules: sender not banned, has given consent and has an ACTIVE profile (ProfileRequired /
+    ProfilePending / ProfileRejected / ProfileHidden); the recipient's profile is ACTIVE, of the
+    opposite gender, owner not banned, no report between the two (else ProfileNotFound); no pending
+    interest in either direction and no open conversation for the pair (InterestAlreadyExists); no
+    conversation of the pair closed by the witness (InterestBlockedByWitness); the sender's earlier
+    interest to this person was not declined (InterestDeclinedBefore) or accepted
+    (InterestSentBefore) — a cancelled one may be sent again; at most INTEREST_DAILY_LIMIT
+    interests per sender in a rolling 24 hours (cancelled ones count).
+    """
+    _check_sender(from_user, to_user_id)
+    try:
+        clean_message = InterestIn(message=message).message
+    except ValidationError as exc:
+        raise InvalidInput(first_error(exc)) from exc
+    # Serialize everything that concerns the two users (pair rules, the sender's daily limit).
+    await lock_users(session, from_user.id, to_user_id)
+    await _check_pair(session, from_user, to_user_id)
 
     reason = flag_reason(clean_message)
     interest = Interest(
@@ -189,11 +209,16 @@ async def accept(session: AsyncSession, interest_id: int, user: User) -> Convers
     for moderation after an edit) cannot gain a chat through interests sent before. Refused while
     the pair has an open conversation (InterestAlreadyExists) or either person has
     MAX_OPEN_CONVERSATIONS open conversations (OpenConversationLimit); both users' rows are locked
-    first, so concurrent accepts cannot exceed the limit."""
+    first, so concurrent accepts cannot exceed the limit. A pair whose chat the witness closed
+    cannot open a new one (InterestBlockedByWitness), also through an interest sent before."""
     interest = await _lock_for_recipient(session, interest_id, user)
     sender = await get_profile(session, interest.from_user_id)
     if sender is None or sender.user.is_banned or not has_approved_content(sender):
         raise ProfileNotFound()
+    # A pending interest left over from before the witness closed the pair's chat (crossed legacy
+    # interests) must not reopen it.
+    if await session.scalar(select(_closed_by_witness(interest.from_user_id, interest.to_user_id))):
+        raise InterestBlockedByWitness()
     if await chat.get_open_conversation_between(session, interest.from_user_id, interest.to_user_id):
         raise InterestAlreadyExists("У вас уже есть открытый чат с этим человеком.")
     open_counts = await chat.count_open_conversations(session, [interest.from_user_id, interest.to_user_id])
@@ -239,6 +264,16 @@ async def decline(session: AsyncSession, interest_id: int, user: User) -> Intere
         notify_user_ids=[interest.from_user_id, interest.to_user_id],
     )
     return interest
+
+
+async def cancel_pending_between(session: AsyncSession, user_id: int, other_id: int) -> None:
+    """Internal (witness close): the pair's pending interests in both directions become cancelled,
+    so no stale «Принять» stays on the site or in the bot."""
+    await session.execute(
+        update(Interest)
+        .where(_between(user_id, other_id), Interest.status == InterestStatus.PENDING)
+        .values(status=InterestStatus.CANCELLED, decided_at=utcnow())
+    )
 
 
 async def cancel(session: AsyncSession, interest_id: int, user: User) -> Interest:

@@ -28,6 +28,7 @@ from app.services.errors import (
     ConsentRequired,
     InterestAlreadyExists,
     InterestDeclinedBefore,
+    InterestLimitReached,
     InterestSentBefore,
     OpenConversationLimit,
     ProfileHidden,
@@ -381,3 +382,57 @@ def test_age_to_birth_year_and_range():
             AgeIn(age=bad)
         assert first_error(exc_info.value).startswith("Возраст:")
     assert utcnow().year >= 2026
+
+
+async def test_check_can_send_refuses_like_send_interest_without_writing(
+    session, make_pair, make_profile, override_settings
+):
+    man, woman = await make_pair()
+    await interests.check_can_send(session, man, woman.id)
+    await interests.send_interest(session, man, woman.id)
+    with pytest.raises(InterestAlreadyExists):
+        await interests.check_can_send(session, man, woman.id)
+    override_settings(INTEREST_DAILY_LIMIT=1)
+    other = (await make_profile(gender=Gender.FEMALE)).user
+    with pytest.raises(InterestLimitReached):
+        await interests.check_can_send(session, man, other.id)
+    assert len((await session.scalars(select(Interest))).all()) == 1
+
+
+async def test_deleting_an_account_while_an_accept_opens_its_chat_leaves_no_open_chat(session, make_pair):
+    """delete_account locks the users row first: the accept commits before it (and its chat is closed
+    as «account deleted») or waits and then fails."""
+    man, woman = await make_pair()
+    interest = await interests.send_interest(session, man, woman.id)
+    await session.commit()
+
+    async with get_sessionmaker()() as acceptor_side, get_sessionmaker()() as deleting_side:
+        accepting = await interests.accept(acceptor_side, interest.id, await acceptor_side.get(User, woman.id))
+        assert accepting.is_open
+        deleting = asyncio.create_task(users.delete_account(deleting_side, await deleting_side.get(User, man.id)))
+        await asyncio.sleep(0.2)  # the deletion waits for the users row the accept holds
+        await acceptor_side.commit()
+        await deleting
+        await deleting_side.commit()
+
+    [conversation] = (await session.scalars(select(Conversation))).all()
+    await session.refresh(conversation)
+    assert conversation.user_a_id is None or conversation.user_b_id is None
+    assert conversation.closed_at is not None and conversation.close_reason == ConversationCloseReason.ACCOUNT_DELETED
+    assert (await chat.count_open_conversations(session, [woman.id]))[woman.id] == 0
+
+
+async def test_the_close_note_tells_each_side_what_closing_really_means(session, make_pair):
+    man, woman = await make_pair()
+    interest = await interests.send_interest(session, man, woman.id)
+    conversation = await interests.accept(session, interest.id, woman)
+    assert await chat.close_note(session, conversation, man) == chat.CLOSE_NOTE_SENDER
+    assert await chat.close_note(session, conversation, woman) == chat.CLOSE_NOTE_ACCEPTOR
+    await chat.close_conversation(session, conversation, woman)
+    with pytest.raises(InterestSentBefore):  # what the sender is told holds…
+        await interests.send_interest(session, man, woman.id)
+    await interests.send_interest(session, woman, man.id)  # …and the acceptor may write first
+    legacy = Conversation(user_a_id=min(man.id, woman.id), user_b_id=max(man.id, woman.id))  # imported, no interest
+    session.add(legacy)
+    await session.flush()
+    assert await chat.close_note(session, legacy, man) == chat.CLOSE_NOTE_UNKNOWN

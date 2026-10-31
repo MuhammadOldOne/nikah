@@ -35,12 +35,14 @@ app/
     routes/        public auth consent profile catalog interests chats live settings admin legal
                    (router = APIRouter())
     templates/base.html, static/
-  bot/             aiogram 3 bot + outbox worker (bot agent): python -m app.bot; handlers/legacy.py
-                   (old callback data), handlers/witness.py (witness buttons), handlers/consent.py
+  bot/             aiogram 3 bot + outbox worker (bot agent): python -m app.bot (--clear-commands:
+                   remove its command menu, for a rollback); handlers/legacy.py (old callback data),
+                   handlers/witness.py (witness buttons), handlers/consent.py, storage.py (dialog
+                   state in the database)
 scripts/          import_legacy.py (--inspect / --import), make_admin.py, backup.sh
 migrations/        Alembic (async env, URL from settings); 0001 = initial schema, 0002 = users.session_version + outbox (kind, created_at),
                    0003 = legacy integration (profiles.number, no name, nullable new fields, messages.kind, open-pair
-                   conversations, pending-per-direction interests, app_meta)
+                   conversations, pending-per-direction interests, app_meta), 0004 = bot_dialog_states
 tests/             conftest.py (shared fixtures), services/ (incl. test_migrations.py), web/, bot/, admin/,
                    import/ (synthetic legacy SQLite), fixtures/legacy_schema.sql (DDL only), e2e/
 ```
@@ -128,7 +130,8 @@ live at `/p/{number}` (`deps.NumberPath`, 1 … 2³¹−1: `profiles.number` is 
 | `login_tokens` | `token_hash` (SHA-256; raw tokens are never stored), `kind` (login/magic/widget — a used Login Widget signature, kept so it cannot be replayed), `user_id`, `expires_at` (10 min), `confirmed_at`, `consumed_at` |
 | `reports` | `reporter_id`, `target_user_id`, `message_id` (SET NULL), `reason` (ReportReason), `comment`, `status` (open/resolved), `resolution` (ReportAction), `resolved_by_id`, `resolved_at` |
 | `outbox` | `kind`, `payload` JSONB, `created_at` (index with `kind`: rate limits), `next_attempt_at`, `attempts`, `last_error`, `sent_at`, `failed_at` |
-| `app_meta` | `key` (PK, ≤64), `value` JSONB, `updated_at`: installation facts; `legacy_import` = `{"imported_at", "counts": {table: rows}}` once the legacy import committed (`services.meta`) |
+| `app_meta` | `key` (PK, ≤64), `value` JSONB, `updated_at`: installation facts; `legacy_import` = `{"imported_at", "counts": {table: rows}}` once the legacy import committed; `witness_chat_migration` = `{"from", "to"}` when Telegram upgraded the witness group to a supergroup (`services.meta`) |
+| `bot_dialog_states` | the bot's aiogram FSM (`app.bot.storage`): `key` (PK: bot, chat, thread, Telegram user, destiny), `telegram_user_id` (indexed; no FK), `state`, `data` JSONB, `updated_at` (indexed). Rows unused for 7 days read as empty and are purged by the bot's housekeeping; `users.delete_account` deletes the person's rows |
 
 All user FKs are `ON DELETE CASCADE` (except conversation sides / closer / resolver: `SET NULL`):
 deleting a `users` row wipes the person's data (152-FZ). Enums are stored as VARCHAR values.
@@ -178,8 +181,14 @@ without gender a neutral form is used (`не был(а) в браке`). `choice
   links (`t.me/…`, `т.ме/…`, `wa.me/…`), domains (also «site точка ру», «site dot com», `site[.]ru`,
   spaced dots), e-mails (also «собака», «(at)») and @usernames with `CONTACT_PLACEHOLDER`
   «[скрыто свидетелем]»; matching runs on an NFKC/lowercase fold with every Unicode digit as ASCII
-  (fullwidth, Arabic-Indic, circled); dates are set aside, so ages, years, dates, times, heights and
-  prices below ten digits stay. `find_contacts(text) -> list[str]` (same engine).
+  (fullwidth, Arabic-Indic, circled), accents, combining marks (keycaps ⃣, variation selectors) and
+  invisible characters dropped (zero-width/bidi controls, the combining grapheme joiner, Hangul
+  fillers, the braille blank — `clean_text` removes those from stored text too), and Cyrillic/Greek
+  look-alikes read as Latin inside words that mix them with Latin letters (`ivаnov`, `t.mе`) or that
+  follow an `@`; plain Russian words are never folded. An `@username` is found also glued to the word
+  before it (`тг@ivanov`, as the legacy filter did); any Latin `host.tld/path` is a link (link-in-bio
+  and short-link hosts). Dates are set aside, so ages, years, dates, times, heights and prices below
+  ten digits stay. `find_contacts(text) -> list[str]` (same engine).
   `profile_title(profile)` → «Анкета №512» («Новая анкета» for an unsaved draft),
   `gender_word(gender)` → «Брат»/«Сестра».
 - Services that take raw text (`send_interest`, `send_message`, `create_report`, `reject`) validate
@@ -224,7 +233,7 @@ stay viewable whatever the viewer's status (an edited profile must not cut off a
 | `admin_telegram_ids(s) -> list[int]` | who receives moderation notifications | — |
 | `ban(s, user)` | idempotent; cancels pending interests (both directions), closes open conversations (`user_banned`, emits `conversation.closed` + `witness.conversation_closed`), revokes guardian links where the user is ward or guardian; catalog hides banned users; administrators cannot be banned (revoke the rights first) | `AdminBanDenied` |
 | `unban(s, user)` | lifts the ban; nothing is reopened; sessions from before the ban stay ended | — |
-| `delete_account(s, user)` | closes open conversations for partners (`account_deleted`), deletes orphaned conversations, deletes the user row (cascade wipes profile, interests, own messages, guardians, tokens, reports); `expunge_all()` | — |
+| `delete_account(s, user)` | locks the users row first (an accept opening a chat with this person commits before and is closed here, or fails after); closes open conversations for partners (`account_deleted`), deletes orphaned conversations and the person's bot dialog states, deletes the user row (cascade wipes profile, interests, own messages, guardians, tokens, reports); `expunge_all()` | — |
 
 Admin rights are checked by callers (web `AdminDep`, bot `users.is_admin`), except in
 `moderation.resolve_report` and `services.witness` (called from a Telegram group).
@@ -271,7 +280,8 @@ With PREMODERATION on, pending/rejected/hidden profiles neither browse nor appea
 | Function | Semantics | Raises |
 |---|---|---|
 | `send_interest(s, from_user, to_user_id, message=None) -> Interest` | see rules below; emits `interest.created` | `UserBanned`, `ConsentRequired`, `InterestToSelf`, `InvalidInput`, `ProfileRequired`, `ProfilePending`/`ProfileRejected`/`ProfileHidden` (all `ProfileNotActive`), `ProfileNotFound`, `InterestAlreadyExists`, `InterestBlockedByWitness`, `InterestDeclinedBefore`, `InterestSentBefore`, `InterestLimitReached` |
-| `accept(s, interest_id, user) -> Conversation` | recipient only; locks both users rows (ascending id) first; the sender's profile must have approved content (a profile taken down by a moderator gains no chat); refused while the pair has an open conversation or **either person has `MAX_OPEN_CONVERSATIONS` open conversations** («У одного из участников уже есть открытый чат. Завершите его сначала.»); creates the conversation; emits `interest.accepted` + `witness.conversation_opened` | `UserBanned`, `ConsentRequired`, `InterestNotFound`, `InterestNotPending`, `ProfileNotFound`, `InterestAlreadyExists`, `OpenConversationLimit` |
+| `check_can_send(s, from_user, to_user_id)` | read-only: raises what `send_interest` would raise right now (except for the message), without locks or writes — the bot refuses an interest button before asking for a message | as `send_interest` |
+| `accept(s, interest_id, user) -> Conversation` | recipient only; locks both users rows (ascending id) first; the sender's profile must have approved content (a profile taken down by a moderator gains no chat); refused for a pair whose chat the witness closed (`InterestBlockedByWitness`), while the pair has an open conversation or **either person has `MAX_OPEN_CONVERSATIONS` open conversations** («У одного из участников уже есть открытый чат. Завершите его сначала.»); creates the conversation; emits `interest.accepted` + `witness.conversation_opened` | `UserBanned`, `ConsentRequired`, `InterestNotFound`, `InterestNotPending`, `ProfileNotFound`, `InterestBlockedByWitness`, `InterestAlreadyExists`, `OpenConversationLimit` |
 | `decline(s, interest_id, user) -> Interest` | recipient only; emits `interest.declined` | `UserBanned`, `ConsentRequired`, `InterestNotFound`, `InterestNotPending` |
 | `cancel(s, interest_id, user) -> Interest` | sender only, pending only; no event; no consent needed; the sender may send this person a new interest later | `InterestNotFound`, `InterestNotPending` |
 | `get_interest(s, interest_id, user) -> Interest` | sender or recipient; both users + profiles loaded | `InterestNotFound` |
@@ -306,7 +316,8 @@ opposite sends cannot both succeed.
 | `close_conversation(s, conversation, user)` | «Завершить общение» (no consent needed); emits `conversation.closed` + `witness.conversation_closed` | `ConversationNotFound`, `ConversationClosed` |
 | `unread_total(s, user) -> int` | badge | — |
 | `set_bot_active_conversation(s, user, conversation_id \| None)` | bot «Ответить» / `/stop` | `ConversationNotFound`, `PartnerDeleted`, `ConversationClosed` |
-| `get_conversation_between(s, a, b)` (open, else latest closed), `get_open_conversation_between(s, a, b)`, `create_conversation(...)`, `force_close(...)`, `flag_message(message, reason)` | internal helpers for other services | — |
+| `close_note(s, conversation, user) -> str` | the confirmation text before closing, by role: `CLOSE_NOTE_SENDER` (sent the accepted interest: can never send one again), `CLOSE_NOTE_ACCEPTOR` (may send one later), `CLOSE_NOTE_UNKNOWN` (legacy chat without its interest) — site and bot | — |
+| `get_conversation_between(s, a, b)` (open, else latest closed), `get_open_conversation_between(s, a, b)`, `create_conversation(...)`, `force_close(...) -> bool` (re-reads the conversation FOR NO KEY UPDATE after the users rows: returns False and changes nothing when a concurrent close won — `close_conversation`/`witness_close` then raise `ConversationClosed`, ban/deletion skip it), `flag_message(message, reason)` | internal helpers for other services | — |
 
 `ConversationSummary(conversation, partner: User | None (profile loaded; None = deleted),
 last_message, unread_count, partner_has_guardian)` + property `partner_profile`. Closing a
@@ -323,7 +334,7 @@ the bot resolves `actor` from the Telegram user who pressed the button (group or
 |---|---|---|
 | `witness_flag(s, actor, message_id) -> Message` | «⚠️ Пометить» (`w:flag:<message_id>`): flags a participant message, appends `witness` to `flag_reason`; idempotent; no event | `WitnessOnly`, `MessageNotFound` (unknown or witness message) |
 | `witness_say(s, actor, conversation_id, text, origin=TELEGRAM) -> Message` | «✍️ Написать в чат» (`w:say:<conversation_id>`): stores `kind='witness'`, `sender_id` NULL, text 1–2000 (no contact filter); also in a closed conversation; updates `last_message_at`; emits `message.witness` | `WitnessOnly`, `InvalidInput`, `ConversationNotFound` |
-| `witness_close(s, actor, conversation_id) -> Conversation` | «🚫 Закрыть чат» (`w:close:<conversation_id>`): `close_reason='closed_by_witness'`, `closed_by_id` = actor; emits `conversation.closed` + `witness.conversation_closed`; the pair can no longer open a chat through interests | `WitnessOnly`, `ConversationNotFound`, `ConversationClosed` («Чат уже закрыт.») |
+| `witness_close(s, actor, conversation_id) -> Conversation` | «🚫 Закрыть чат» (`w:close:<conversation_id>`): `close_reason='closed_by_witness'`, `closed_by_id` = actor; emits `conversation.closed` + `witness.conversation_closed`; the pair's pending interests (both directions) are cancelled and the pair can no longer open a chat through interests (`send_interest` and `accept` refuse) | `WitnessOnly`, `ConversationNotFound`, `ConversationClosed` («Чат уже закрыт.», also when a concurrent close won) |
 
 ### meta (`app.services.meta`)
 | Function | Semantics | Raises |
@@ -331,6 +342,7 @@ the bot resolves `actor` from the Telegram user who pressed the button (group or
 | `get_value(s, key) -> dict \| None`, `set_value(s, key, value)` | key-value upsert | — |
 | `legacy_import_marker(s) -> dict \| None` | `{"imported_at", "counts"}` once imported | — |
 | `mark_legacy_import(s, counts: {table: int})` | call in the importer's transaction (counts only); a second import (also a concurrent one) cannot commit | `LegacyImportDone` |
+| `witness_chat_id(s) -> int \| None`, `record_witness_chat_migration(s, old, new)` | the witness group: `WITNESS_CHAT_ID`, or the supergroup Telegram moved it to (recorded by the outbox worker) while the setting still names the old group | — |
 
 ### guardians
 | Function | Semantics | Raises |
@@ -410,17 +422,25 @@ Outbox worker pattern (bot): wake on every `EventListener` event and at least ev
 async with session_scope() as session:
     for row in await events.fetch_pending(session, limit=20):
         try:
-            await deliver(row)  # loads data by IDs, sends via aiogram Bot
-        except TELEGRAM_UNAVAILABLE:  # network, 5xx, persistent flood control
+            held = await deliver(row)  # loads data by IDs, sends via aiogram Bot; chats under flood control
+        except TELEGRAM_UNAVAILABLE:  # network, 5xx, rejected token
             break  # row untouched; the worker pauses 5 s … 5 min
         except Exception as exc:  # a failure of this row only
             await events.mark_failed(session, row, type(exc).__name__)
         else:
-            await events.mark_sent(session, row)
+            if held:  # TelegramRetryAfter for one chat: that chat waits, the others go on
+                await events.defer(session, row, release_time)  # no attempt counted
+            else:
+                await events.mark_sent(session, row)
 ```
 
 An outage never counts attempts (it would give up wali copies after ~21 minutes) and stopping the
-batch keeps the order of messages. Logs carry no message texts or SQL parameters (`exc_summary`).
+batch keeps the order of messages. Flood control is per chat (a group takes ~20 messages a minute):
+the chat is held until Telegram's `retry_after`, every row for it (also later rows of the same batch)
+is deferred to that moment, rows for other chats are delivered meanwhile; held rows become due
+together and are taken in id order, so each chat still gets its messages in order. Chats a deferred
+row already reached are remembered by the worker and not sent again. `TelegramMigrateToChat` (a group
+upgraded to a supergroup) re-sends to the new id and records it (`meta.witness_chat_id`). Logs carry no message texts or SQL parameters (`exc_summary`).
 
 Delivery is at-least-once. Housekeeping (e.g. daily from the bot process):
 `events.purge_processed`, `auth.purge_expired_tokens`.
@@ -501,6 +521,10 @@ browser to resync (it re-fetches `list_messages(after_id=…)`).
   `alembic check` → downgrade → head. New revisions must keep it green (one head).
 - Every participant message now also emits a `witness.copy` row (and accept/close emit
   `witness.*` rows): count outbox rows by kind, not in total.
+- The bot's dialog state lives in the database (`app.bot.storage.DatabaseStorage`, the default of
+  `create_dispatcher()`): a test simulates a restart with a new dispatcher on the same database. Inside
+  an update it uses the update's session; outside one it commits its own short transaction, so a test
+  must commit its own writes to `bot_dialog_states` before calling the storage directly.
 - `tests/e2e` (skipped unless `E2E=1`): **empties** `E2E_DATABASE_URL` (default `nikah_e2e_test`; the
   name must contain `test`), migrates it, imports a synthetic legacy `data.db`
   (`python -m tests.e2e.prepare`, rows built with `tests/import/conftest.LegacyDb`) with
@@ -580,7 +604,9 @@ to whoever changes a flow it drives (it is skipped without `E2E=1`: run it befor
 15. Logging out of the site ends all of the person's site sessions (stateless cookies + version).
 16. In the bot, a Telegram «Reply» goes to the chat of the replied message, ending an open dialog;
     a reply to a wali copy, an interest or profile card is refused with a hint (never sent to the
-    active chat). Editing a profile in the bot asks which field to change.
+    active chat). A reply to a legacy message whose only button is `chat:close` («Чат открыт…»,
+    «Открыт чат с анкетой №N… Пишите сюда») goes to the only open chat, as in the legacy bot. Editing
+    a profile in the bot asks which field to change.
 
 Legacy integration (LEGACY_BOT.md is the source; these fill its gaps):
 
@@ -607,7 +633,9 @@ Legacy integration (LEGACY_BOT.md is the source; these fill its gaps):
 24. Contact filter: any run of 10+ digits joined by separators is hidden (phones, but also card
     numbers or tax ids); dates are excluded first; contacts separated only by spaces/punctuation
     share one placeholder, and a message that would exceed 2000 characters after hiding is refused. Stop words are matched on the filtered text, so
-    a hidden number never lands in `flag_reason`.
+    a hidden number never lands in `flag_reason`. Disguises are folded for matching only (look-alike
+    letters inside mixed-script words, invisible characters, marks); plain Russian words are never
+    folded, so «Казани.Со мной» is not a domain. The filter stays best effort (spelled-out digits pass).
 25. The 0003 downgrade restores the 0002 schema and deletes witness messages; it refuses (changing
     nothing) when the data cannot be represented in 0002 (incomplete migrated profiles, several
     chats or active interests per pair). Profiles get `name = 'Анкета <number>'` on downgrade.
@@ -623,7 +651,9 @@ Website (legacy integration; web agent):
 - **W2.** Gate pages are ordinary 200 pages explaining the state (not error pages); a counterpart's
   profile and `/interests` (answering incoming interests) stay available while one's own profile
   is pending, rejected or hidden (decision 19). An unknown `/p/{number}` and a POST on a profile
-  the person may not see both answer 404, so existence of numbers is not probed through forms.
+  the person may not see both answer 404, so existence of numbers is not probed through forms: the
+  `/interest` and `/report` POSTs first resolve the profile with `get_viewable_profile_by_number`
+  (also for a viewer whose own profile is not published: only counterparts are visible then).
 - **W3.** «Дополнить анкету» asks all missing required fields at once and needs all of them (they
   are required for new profiles too); the banner shows on `/` and `/me`, «не указано» everywhere else.
 - **W4.** Message reports use a separate page per message (works without JavaScript); witness
@@ -648,20 +678,28 @@ Telegram bot (legacy integration; bot agent):
   Buttons of members name people by profile number, never by `users.id` (admin cards keep it).
 - **B2.** A legacy `adm:appr` acts only if the profile was not re-submitted after the card's
   message was sent (else the current card is sent instead); `adm:rej` asks for the reason like a
-  new card. `br:p|n:<i>` reopen browsing at that position, `br:int:<number>` starts an interest
-  (all service checks apply), `chat:close` asks for confirmation before closing the only open chat.
+  new card. `br:p|n:<i>` reopen browsing at that position, `br:int:<number>` sends the interest at
+  once without a message, as the legacy button did (all service checks apply), `chat:close` asks
+  for confirmation before closing the only open chat.
 - **B3.** Consent gate in the bot applies to accounts with a profile and no consent (migrated).
   Exempt: /start (with deep links), /help, /rules and their labels, /cancel, /delete and account
   deletion, the consent button, site login and wali confirmation, and the withdrawals services allow
-  without consent (hide the profile, cancel an interest, close a chat, report a message). A gated
-  menu section, command or chat text is carried out right after «Даю согласие»; a gated button
-  must be pressed again. People without a profile consent at the end of the profile form.
+  without consent (hide the profile, cancel an interest, close a chat, report a message). What was
+  gated is carried out right after «Даю согласие»: every chat text in order (at most 20; the first
+  one shows the consent prompt, the next ones a short «будет отправлено после согласия»), each to the
+  chat it was addressed to — a «Reply» is resolved like the relay does, and one the relay would
+  refuse (to a card or a wali copy) is refused at once — then the last menu section or command. The
+  queue lives in the dialog storage, so a restart before consent loses nothing. A gated button must
+  be pressed again. People without a profile consent at the end of the profile form.
 - **B4.** Registration keeps the legacy order and wording and inserts the new required fields as
   buttons after nationality; nationality and «О себе» stay skippable; «Готово, остальное позже»
   appears only after the (required) wishes. The bot asks the age everywhere (also when editing).
 - **B5.** The card shows the legacy fields and the four new required ones with «не указано» when
   empty; optional extras (height, weight, occupation, madhab, prayer, nikah, relocation) only when
-  filled. «Дополнить анкету» saves each button press at once (stateless, survives restarts).
+  filled. «Дополнить анкету» saves each button press at once (stateless, survives restarts), so it
+  never invites typing: the number of children is buttons 0–15 as on the site. Its texts follow the
+  status: «повторная модерация не нужна» only for an active or hidden profile; a pending one stays
+  on moderation, and any edit sends a rejected one back to moderation.
 - **B6.** «Мой чат» with one open chat shows the partner's card only if its content is approved
   (as on the site); /stop with exactly one open chat explains that text always goes there. Closing
   a chat asks for confirmation (also from the legacy button).
@@ -669,12 +707,30 @@ Telegram bot (legacy integration; bot agent):
   are handled there; accounts are created only for ADMIN_TELEGRAM_IDS (never for other members).
   The text prompt is a ForceReply so it reaches the bot in privacy mode. If Telegram refuses the
   witness chat for good (bot removed, wrong id) a copy goes to every admin instead; flood control
-  only delays copies (the row stays pending), it never drops one.
+  only delays copies (the row stays pending), it never drops one, and it holds only that chat:
+  partner messages and notices never wait behind the group (§8). A group Telegram upgraded to a
+  supergroup keeps getting copies at its new id, and its buttons work (until WITNESS_CHAT_ID is
+  updated; the log says so). Admins may use `/ban` and `/unban` in the group (the answer names a
+  profile number only); `/admin` there points to the private chat (no profile cards in a group).
 - **B8.** `TELEGRAM_PROXY=https://…` is refused at startup with a clear message (aiogram's proxy
   connector supports http CONNECT and socks only; the Telegram traffic inside an http CONNECT tunnel
   is TLS anyway). The message never contains the URL.
 - **B9.** Witness messages and «Чат закрыт свидетелем» honour `notify_telegram` like other
   notifications (the site shows them in the chat).
+- **B10.** Dialog state is kept in the database (`bot_dialog_states`, 7 days): a dialog in progress
+  survives a restart, so a report comment or a profile text typed after a deploy is never relayed to
+  the chat partner. While the person has an open chat any plain text goes there (LEGACY_BOT.md §2.7),
+  so «Написать (заинтересоваться)» then sends the interest at once without a message; if a chat
+  opens while the interest message is being asked for, the next text goes nowhere and the person is
+  told (it may have been meant for the new chat). An interest button that cannot succeed (pending
+  interest or chat, earlier decline or accept, witness block, daily limit) is refused at once with
+  the reason (`interests.check_can_send`), before a message is asked for.
+- **B11.** Editing a profile (bot and site) saves only the fields the person changed in that form or
+  dialog: the rest of the form is a snapshot, and a change made meanwhile in the other channel (or by
+  «Дополнить анкету») is kept, not reverted. The site posts the values it showed (`original`).
+- **B12.** The close confirmation says what closing means for this person (`chat.close_note`): the
+  sender of the accepted interest can never send this person an interest again; the acceptor may.
+  A legacy chat closed without a known closer (import) reads «Общение завершено.» for both sides.
 
 Legacy import, deployment and admin panel (legacy integration; ops agent):
 
@@ -709,6 +765,15 @@ Legacy import, deployment and admin panel (legacy integration; ops agent):
   `/admin/chats/{id}` show whole histories including witness messages: admins are the witness and
   already receive a copy of every message. The dashboard shows the `legacy_import` marker next to
   today's counts, users without consent and incomplete profiles. Witness actions stay in Telegram.
+- **O8.** Admin rights the import wrote (`users.is_admin` for `role='admin'` and ADMIN_TELEGRAM_IDS,
+  LEGACY_BOT.md §4) outlive a later change of `.env`: DEPLOY.md §12 and CUTOVER.md tell the operator
+  to revoke them with `scripts.make_admin --revoke`; `/admin/users` marks every admin.
+- **O9.** The cutover never starts the new bot before the import: DEPLOY.md §9 enables the Login
+  Widget only after CUTOVER step 6 (`docker compose up -d web`), the compose header points to
+  CUTOVER. A rollback stops the bot **and** the site (site chats would otherwise accept messages no
+  Telegram partner or witness receives) and removes the new bot's command menu
+  (`python -m app.bot --clear-commands`). The nginx template logs no query strings or referers and
+  skips `/auth/magic/` (login tokens and widget data stay out of logs, like the app's own log).
 - **O7.** Deployment variants are compose override files chosen by `COMPOSE_FILE` in `.env`, so every
   documented command stays `docker compose …`: `docker-compose.nginx.yml` (Caddy gets a never-activated
   profile, `web` published on `127.0.0.1:${WEB_HOST_PORT:-8000}`, nginx template

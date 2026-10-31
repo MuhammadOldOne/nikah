@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app.bot import render, texts
 from app.bot.callbacks import CatalogAction, CatalogCb, ChatAction, ChatCb, MessageReportCb, ProfileAction, ProfileCb
 from app.enums import Gender, MessageOrigin, ReportReason
-from app.models import Interest, Message, Outbox, Profile, Report
+from app.models import Message, Outbox, Profile, Report
 from app.services import chat, interests, users
 from tests.bot.conftest import button_data, buttons
 
@@ -226,8 +226,9 @@ async def _chat_with_second_suitor(session, make_profile, make_conversation):
 
 async def test_reply_button_ends_an_open_dialog(harness, session, make_profile, make_conversation):
     sister, _, _, conversation = await _chat_with_second_suitor(session, make_profile, make_conversation)
-    await harness.press(sister, CatalogCb(action=CatalogAction.INTEREST, number=502).pack())
-    assert harness.last_text(sister) == texts.INTEREST_MESSAGE_PROMPT
+    await harness.press(sister, CatalogCb(action=CatalogAction.REPORT, number=502).pack())
+    await harness.press(sister, f"rr:502:{ReportReason.FAKE.value}")
+    assert harness.edited_texts()[-1].endswith(texts.REPORT_COMMENT_PROMPT)
 
     await harness.press(sister, ChatCb(action=ChatAction.REPLY, conversation_id=conversation.id).pack())
     assert harness.last_text(sister).startswith(texts.CANCELLED)
@@ -238,7 +239,7 @@ async def test_reply_button_ends_an_open_dialog(harness, session, make_profile, 
     assert [(m.conversation_id, m.text) for m in sent] == [
         (conversation.id, "Ва алейкум ассалям! Мой отец хочет поговорить с вашей семьёй")
     ]
-    assert (await session.scalars(select(Interest).where(Interest.from_user_id == sister.id))).all() == []
+    assert (await session.scalars(select(Report))).all() == []
 
 
 async def test_reply_to_notification_inside_a_dialog_goes_to_the_chat(

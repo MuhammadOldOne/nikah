@@ -234,8 +234,11 @@ def filter_city() -> InlineKeyboardMarkup:
     return _markup([_cb("Любой город", CatalogCb(action=CatalogAction.ANY_CITY).pack())], [cancel_button()])
 
 
-def interest_message() -> InlineKeyboardMarkup:
-    return _markup([_cb("Без сообщения", CatalogCb(action=CatalogAction.NO_MESSAGE).pack())], [cancel_button()])
+def interest_message(number: int) -> InlineKeyboardMarkup:
+    """Under the question for an interest message: «Без сообщения» names the profile, so it works
+    whatever happened to the dialog."""
+    no_message = CatalogCb(action=CatalogAction.NO_MESSAGE, number=number).pack()
+    return _markup([_cb("Без сообщения", no_message)], [cancel_button()])
 
 
 def profile_view(

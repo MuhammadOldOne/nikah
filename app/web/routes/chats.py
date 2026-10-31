@@ -86,6 +86,7 @@ async def _chat_page(
             "partner": partner,
             "partner_profile": partner.profile if partner else None,
             "wali_watching": bool(await guardians.users_with_active_guardian(session, participants)),
+            "close_note": await chat.close_note(session, conversation, user) if conversation.is_open else "",
             "has_more": len(messages) == PAGE_SIZE,
             "message_max": CHAT_MESSAGE_MAX,
             "comment_max": REPORT_COMMENT_MAX,

@@ -88,9 +88,10 @@ async def test_domain_errors_are_shown(harness, session, make_profile, override_
     await interests.send_interest(session, man, woman.id)
     await session.commit()
 
+    # Refused at the button, before a message is asked for.
     await harness.press(man, CatalogCb(action=CatalogAction.INTEREST, number=other.number).pack())
-    await harness.press(man, CatalogCb(action=CatalogAction.NO_MESSAGE).pack())
-    assert "Лимит откликов на сегодня исчерпан" in harness.last_text(man)
+    assert "Лимит откликов на сегодня исчерпан" in harness.callback_answers()[-1].text
+    assert texts.INTEREST_MESSAGE_PROMPT not in harness.texts(man)
 
 
 async def test_filter_by_age_and_city(harness, make_profile):

@@ -430,3 +430,18 @@ class AppMeta(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[dict[str, Any]] = mapped_column(JSONB)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow, server_default=func.now())
+
+
+class BotDialogState(Base):
+    """The bot's dialog state (aiogram FSM, app.bot.storage): kept in the database so a dialog in
+    progress (a report comment, an interest message, a profile edit) survives a restart instead of
+    letting its next text fall through to the chat relay. Rows unused for a while are ignored and
+    purged; the person's rows are deleted with the account."""
+
+    __tablename__ = "bot_dialog_states"
+
+    key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    state: Mapped[str | None] = mapped_column(String(200))
+    data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default=sql_text("'{}'::jsonb"))
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow, server_default=func.now(), index=True)

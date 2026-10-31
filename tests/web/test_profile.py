@@ -1,8 +1,13 @@
 """Profile wizard, own profile page, editing, hiding and account deletion."""
 
+import html
+import json
+import re
+
 from app.clock import current_year
 from app.enums import Gender, ProfileStatus
 from app.models import User
+from app.schemas import ProfileUpdate
 from app.services import profiles, users
 from tests.web.conftest import csrf_of, profile_form
 
@@ -129,6 +134,25 @@ async def test_edit_profile(client, dev_login, make_profile, session):
     await session.refresh(profile)
     assert (profile.city, profile.height, profile.status) == ("Уфа", 165, ProfileStatus.PENDING)
     assert "отправлены на модерацию" in (await client.get("/me")).text
+
+
+async def test_a_stale_edit_form_keeps_changes_made_elsewhere_meanwhile(client, dev_login, make_profile, session):
+    """Only the fields changed in the form are saved: an edit made in the bot after the page was
+    opened is not reverted (and does not re-moderate the profile)."""
+    user = await _login_with_profile(client, dev_login, make_profile)
+    page = (await client.get("/me/edit")).text
+    shown = {name: value for name, value in re.findall(r'<input[^>]*name="([a-z_]+)"[^>]*value="([^"]*)"', page)}
+    original = html.unescape(re.search(r'name="original" value="([^"]*)"', page).group(1))
+    profile = await profiles.get_profile(session, user.id)
+    await profiles.update_profile(session, user, ProfileUpdate(height=165, about="Работаю инженером"))
+    await session.commit()
+
+    form = profile_form(csrf_token=shown["csrf_token"], original=original, city="Уфа")
+    form |= {name: value for name, value in json.loads(original).items() if name not in ("city", "gender")}
+    response = await client.post("/me/edit", data=form)
+    assert response.status_code == 303
+    await session.refresh(profile)
+    assert (profile.city, profile.height, profile.about) == ("Уфа", 165, "Работаю инженером")
 
 
 async def test_edit_profile_validation_error(client, dev_login, make_profile):

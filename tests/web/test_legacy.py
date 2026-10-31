@@ -154,11 +154,28 @@ async def test_gate_reloads_htmx_requests_and_refuses_interests(client, dev_logi
     assert partial.status_code == 204 and partial.headers["HX-Redirect"] == "/catalog"
 
     csrf = await csrf_of(client, "/me")
+    # A profile the person may not see answers like a number that does not exist (W2).
     response = await client.post(f"/p/{sister.number}/interest", data={"csrf_token": csrf, "message": ""})
-    assert response.status_code == 303 and response.headers["location"] == f"/p/{sister.number}"
+    assert response.status_code == 404
     page = (await client.get(f"/p/{sister.number}")).text
     assert "Смотреть анкеты и отправлять отклики можно после модерации" in page
     assert await session.scalar(select(func.count()).select_from(Outbox).where(Outbox.kind == "interest.created")) == 0
+
+
+@pytest.mark.parametrize("own_status", [ProfileStatus.ACTIVE, ProfileStatus.PENDING])
+async def test_profile_forms_do_not_reveal_which_numbers_exist(client, dev_login, make_profile, session, own_status):
+    """POSTs on a profile the person may not see answer 404, exactly like an unknown number (W2)."""
+    me = await make_profile(gender=Gender.MALE, status=own_status)
+    brother = await make_profile(gender=Gender.MALE)
+    hidden = await make_profile(gender=Gender.FEMALE, status=ProfileStatus.HIDDEN)
+    pending = await make_profile(gender=Gender.FEMALE, status=ProfileStatus.PENDING)
+    await dev_login(client, me.user)
+    csrf = await csrf_of(client, "/me")
+    for number in (brother.number, hidden.number, pending.number, 99_999):
+        for action, data in (("interest", {"message": ""}), ("report", {"reason": "other", "comment": ""})):
+            response = await client.post(f"/p/{number}/{action}", data={"csrf_token": csrf, **data})
+            assert response.status_code == 404, (number, action)
+    assert await session.scalar(select(func.count()).select_from(Outbox)) == 0
 
 
 async def test_pending_user_keeps_counterparts_and_answers_interests(client, dev_login, make_pair, session):

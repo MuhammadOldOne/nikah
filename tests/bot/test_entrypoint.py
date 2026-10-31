@@ -10,12 +10,12 @@ from typing import Any
 
 import pytest
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.methods import SetMyCommands
+from aiogram.methods import DeleteMyCommands, SetMyCommands
 from aiogram.types import BotCommandScopeAllPrivateChats, BotCommandScopeChat
 from aiohttp import TCPConnector
 from pydantic import SecretStr
 
-from app.bot.__main__ import serve
+from app.bot.__main__ import clear, serve
 from app.bot.dispatcher import PROXY_UNSUPPORTED, create_bot, create_dispatcher, set_commands, telegram_session
 from tests.bot.conftest import RecordingSession
 
@@ -48,6 +48,17 @@ async def test_commands_menu_has_the_legacy_commands_and_admin_ones_for_admins(m
     assert isinstance(everyone.scope, BotCommandScopeAllPrivateChats)
     assert [c.command for c in admins.commands][-3:] == ["admin", "ban", "unban"]
     assert isinstance(admins.scope, BotCommandScopeChat) and admins.scope.chat_id == 777
+
+
+async def test_clear_commands_removes_the_menu_for_everyone_and_every_admin(make_user, override_settings) -> None:
+    """Rollback to the legacy bot: its users must not keep /stop or /delete in the menu."""
+    override_settings(ADMIN_TELEGRAM_IDS=[777])
+    flagged = await make_user(is_admin=True)
+    api = RecordingSession()
+    await clear(create_bot("42:TEST-TOKEN", session=api))
+    deleted = [method for method in api.requests if isinstance(method, DeleteMyCommands)]
+    assert isinstance(deleted[0].scope, BotCommandScopeAllPrivateChats)
+    assert sorted(method.scope.chat_id for method in deleted[1:]) == sorted([777, flagged.telegram_id])
 
 
 @pytest.mark.parametrize(

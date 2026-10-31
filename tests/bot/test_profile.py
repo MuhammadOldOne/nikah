@@ -5,11 +5,12 @@ from __future__ import annotations
 
 from sqlalchemy import func, select
 
-from app.bot import texts
+from app.bot import render, texts
 from app.bot.callbacks import CANCEL, FieldAction, FieldCb, FillCb, ProfileAction, ProfileCb
 from app.clock import current_year
 from app.enums import Education, Employment, Gender, MaritalStatus, ProfileStatus
 from app.models import Outbox, Profile
+from app.schemas import ProfileUpdate
 from app.services import profiles
 from tests.bot.conftest import button_data, buttons, menu_labels
 
@@ -190,6 +191,21 @@ async def test_edit_of_choices_and_numbers_keeps_the_profile_published(harness, 
     assert await session.scalar(select(func.count()).select_from(Outbox)) == 0
 
 
+async def test_a_bot_edit_saves_only_the_answered_fields(harness, session, make_profile):
+    """Changes made on the site while the bot edit was open are kept (no last-writer-wins)."""
+    profile = await make_profile(gender=Gender.MALE, city="Казань")
+    user = profile.user
+    await harness.press(user, ProfileCb(action=ProfileAction.EDIT).pack())
+    await harness.press(user, FieldCb(field="city", action=FieldAction.PICK).pack())
+    await profiles.update_profile(session, user, ProfileUpdate(height=165, about="Работаю инженером"))
+    await session.commit()
+    await harness.text(user, "Москва")
+    await harness.press(user, ProfileCb(action=ProfileAction.SAVE).pack())
+
+    await session.refresh(profile)
+    assert (profile.city, profile.height, profile.about) == ("Москва", 165, "Работаю инженером")
+
+
 async def test_new_profile_can_skip_the_remaining_optional_fields(harness, session, make_user):
     user = await make_user()
     await harness.text(user, "/create")
@@ -230,6 +246,49 @@ async def test_synonym_label_of_the_first_new_bot_opens_my_profile(harness, make
     assert harness.last_text(newcomer) == texts.NO_PROFILE
 
 
+async def test_completion_asks_children_with_buttons_only_and_never_relays_typed_text(
+    harness, session, make_pair, make_conversation
+):
+    """«Дополнить анкету» has no dialog: it never invites typing (a typed number would go to the
+    open chat), and every allowed number of children is a button."""
+    man, woman = await make_pair()
+    await make_conversation(man, woman)
+    profile = man.profile
+    profile.marital_status = profile.children = None
+    await session.commit()
+    await harness.press(man, ProfileCb(action=ProfileAction.COMPLETE).pack())
+    await harness.press(man, FillCb(field="marital_status", value="divorced").pack())
+    question = harness.last_text(man)
+    assert "Сколько у вас детей?" in question and "напишите" not in question
+    values = [b.callback_data for b in buttons(harness.last_markup(man))]
+    assert values == [FillCb(field="children", value=str(n)).pack() for n in range(16)]
+    await harness.press(man, FillCb(field="children", value="7").pack())
+    await session.refresh(profile)
+    assert profile.children == 7
+    assert harness.last_text(man) == render.profile_completed(ProfileStatus.ACTIVE)
+
+
+async def test_completion_texts_follow_the_status(harness, session, make_profile):
+    """A rejected profile goes back to moderation with any edit; a pending one stays unpublished."""
+    rejected = await make_profile(
+        gender=Gender.FEMALE, status=ProfileStatus.REJECTED, marital_status=None, children=None, education=None
+    )
+    rejected.moderation_note = "Уточните город"
+    await session.commit()
+    user = rejected.user
+    await harness.text(user, "Моя анкета")
+    assert "повторная модерация не нужна" not in harness.last_text(user)
+    assert "снова уйдёт на модерацию" in harness.last_text(user)
+    await harness.press(user, ProfileCb(action=ProfileAction.COMPLETE).pack())
+    await harness.press(user, FillCb(field="marital_status", value="divorced").pack())
+    await harness.press(user, FillCb(field="children", value="0").pack())
+    await harness.press(user, FillCb(field="education", value="higher").pack())
+    await session.refresh(rejected)
+    assert rejected.status == ProfileStatus.PENDING
+    assert harness.last_text(user) == render.profile_completed(ProfileStatus.PENDING)
+    assert "модерация не нужна" not in harness.last_text(user)
+
+
 async def test_complete_migrated_profile_one_button_per_field_without_moderation(harness, session, make_profile):
     profile = await make_profile(
         gender=Gender.FEMALE, marital_status=None, children=None, education=None, employment=None
@@ -246,7 +305,7 @@ async def test_complete_migrated_profile_one_button_per_field_without_moderation
     await harness.press(user, FillCb(field="marital_status", value="widowed").pack())  # an old button: ignored
     await harness.press(user, FillCb(field="education", value="religious").pack())
     await harness.press(user, FillCb(field="employment", value="business").pack())
-    assert harness.last_text(user) == texts.COMPLETED
+    assert harness.last_text(user) == render.profile_completed(ProfileStatus.ACTIVE)
 
     await session.refresh(profile)
     assert (profile.marital_status, profile.children, profile.education, profile.employment) == (

@@ -2,7 +2,7 @@
 система с одной базой данных») and that the legacy bot's users arrive intact, with real browsers
 on a running server.
 
-Skipped unless ``E2E=1``. Needs Node with Playwright and a free port 8000::
+Skipped unless ``E2E=1``. Needs Node with Playwright and a free port (8000, or ``E2E_PORT``)::
 
     E2E=1 E2E_DATABASE_URL=postgresql+asyncpg://nikah:nikah@127.0.0.1:5432/nikah_e2e_test \\
         TEST_DATABASE_URL=postgresql+asyncpg://nikah:nikah@127.0.0.1:5432/<test_db> \\
@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = Path(__file__).with_name("cross_channel.js")
 SCREENSHOTS = ROOT / "docs" / "screenshots"
 DATABASE_URL = os.environ.get("E2E_DATABASE_URL", "postgresql+asyncpg://nikah:nikah@127.0.0.1:5432/nikah_e2e_test")
-HOST, PORT = "127.0.0.1", 8000
+HOST, PORT = "127.0.0.1", int(os.environ.get("E2E_PORT", "8000"))
 BASE_URL = f"http://{HOST}:{PORT}"
 # Telegram ids of the people created during the run (the legacy ones come from prepare.py).
 ACCOUNTS = {"brother": 9_200_000_001, "sister": 9_200_000_002, "wali": 9_200_000_003, "admin": 9_200_000_004}
@@ -116,7 +116,7 @@ def server(tmp_path: Path) -> Iterator[dict[str, str]]:
     if shutil.which("node") is None:
         pytest.fail("node is required for the browser end-to-end test")
     if not _port_is_free():
-        pytest.fail(f"port {PORT} is busy: stop the dev server first")
+        pytest.fail(f"port {PORT} is busy: stop the dev server first (or set E2E_PORT)")
     env = _app_env()
     python = sys.executable
     _run_ok([python, "-m", "tests.e2e.prepare", "wipe"], env)

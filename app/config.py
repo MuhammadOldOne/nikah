@@ -50,7 +50,8 @@ class Settings(BaseSettings):
     # Telegram chat (usually a group, negative id) that receives copies of every chat message and the
     # witness notices. Unset: each admin receives them in a private chat.
     WITNESS_CHAT_ID: int | None = None
-    # Proxy for api.telegram.org (http://, https:// or socks5://); may contain credentials: never log it.
+    # Proxy for api.telegram.org (http://, socks5:// or socks4://; the bot rejects https:// at start);
+    # may contain credentials: never log it.
     TELEGRAM_PROXY: SecretStr | None = None
     # Legacy names (the old bot's .env), folded into TELEGRAM_TOKEN / ADMIN_TELEGRAM_IDS.
     BOT_TOKEN: SecretStr = SecretStr("")

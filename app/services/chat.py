@@ -22,7 +22,7 @@ from app.clock import utcnow
 from app.config import get_settings
 from app.db import affected_rows
 from app.enums import ConversationCloseReason, MessageOrigin
-from app.models import CONTACT_FILTER_REASON, Conversation, Message, Profile, User
+from app.models import CONTACT_FILTER_REASON, Conversation, Interest, Message, Profile, User
 from app.schemas import CHAT_MESSAGE_MAX, ChatMessageIn, first_error
 from app.services import events, guardians
 from app.services.errors import (
@@ -44,6 +44,20 @@ MAX_PAGE_SIZE = 200
 MESSAGE_RATE_WINDOW = timedelta(minutes=1)
 # Shown to the sender (site and bot) when ``message.contacts_hidden``.
 CONTACTS_HIDDEN_NOTICE = "Часть текста была скрыта фильтром (телефоны/ссылки/@). Свидетель уведомлён."
+# What closing a chat means for the person closing it (decisions 5 and 17: only the sender of the
+# accepted interest that opened it can never send this person an interest again).
+CLOSE_NOTE_SENDER = (
+    "Писать в этот чат будет нельзя. Отправить этой анкете отклик ещё раз вы не сможете: "
+    "новый чат возможен, только если отклик отправит собеседник."
+)
+CLOSE_NOTE_ACCEPTOR = (
+    "Писать в этот чат будет нельзя. Повторить свой отклик собеседник не сможет: "
+    "новый чат возможен, только если отклик отправите вы."
+)
+CLOSE_NOTE_UNKNOWN = (  # chats moved from the legacy bot without their interest
+    "Писать в этот чат будет нельзя. Принятый отклик повторить нельзя: "
+    "новый чат возможен, только если отклик отправит тот, кто его не отправлял."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,15 +344,24 @@ async def force_close(
     conversation: Conversation,
     reason: ConversationCloseReason,
     closed_by_id: int | None = None,
-) -> None:
+) -> bool:
     """Internal: close without permission checks (user actions, bans, deletions, the witness).
-    Emits ``conversation.closed`` (participants) and ``witness.conversation_closed``."""
+    Emits ``conversation.closed`` (participants) and ``witness.conversation_closed``.
+
+    Returns False (and changes nothing) when a concurrent close got there first: the row is
+    re-read under a lock, so two closes never both succeed and the first reason stays (a witness
+    close is never overwritten by a user's close a moment later)."""
     # Lock order: users rows before the conversation row, as when a message is sent (the bot and
     # the site update the sender's last_seen_at first). Changing the conversation first would let
     # autoflush lock it before the users rows, and a reply sent at the same moment would deadlock.
     await session.execute(
         update(User).where(User.bot_active_conversation_id == conversation.id).values(bot_active_conversation_id=None)
     )
+    locked = await session.get(
+        Conversation, conversation.id, with_for_update={"key_share": True}, populate_existing=True
+    )
+    if locked is None or not locked.is_open:
+        return False
     conversation.closed_at = utcnow()
     conversation.closed_by_id = closed_by_id
     conversation.close_reason = reason
@@ -347,15 +370,29 @@ async def force_close(
     payload = {"conversation_id": conversation.id, "closed_by_id": closed_by_id, "reason": reason.value}
     await events.emit(session, events.EventKind.CONVERSATION_CLOSED, payload, notify_user_ids=participants)
     await events.emit(session, events.EventKind.WITNESS_CONVERSATION_CLOSED, payload)
+    return True
+
+
+async def close_note(session: AsyncSession, conversation: Conversation, user: User) -> str:
+    """The confirmation text before ``user`` closes ``conversation``, by their role in it."""
+    interest = (
+        await session.get(Interest, conversation.created_from_interest_id)
+        if conversation.created_from_interest_id is not None
+        else None
+    )
+    if interest is None:
+        return CLOSE_NOTE_UNKNOWN
+    return CLOSE_NOTE_SENDER if interest.from_user_id == user.id else CLOSE_NOTE_ACCEPTOR
 
 
 async def close_conversation(session: AsyncSession, conversation: Conversation, user: User) -> None:
     """«Завершить общение»: any participant may close an open conversation (also without consent)."""
     if not conversation.is_participant(user.id):
         raise ConversationNotFound()
-    if not conversation.is_open:
+    if not conversation.is_open or not await force_close(
+        session, conversation, ConversationCloseReason.CLOSED_BY_USER, closed_by_id=user.id
+    ):
         raise ConversationClosed()
-    await force_close(session, conversation, ConversationCloseReason.CLOSED_BY_USER, closed_by_id=user.id)
 
 
 async def unread_total(session: AsyncSession, user: User) -> int:

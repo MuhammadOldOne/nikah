@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from aiogram import F, Router
+from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -222,6 +223,24 @@ async def on_report_action(
         return
     await callback.answer("Готово")
     await edit(callback, f"{message_html(callback)}\n\n✅ <b>Решение:</b> {label(action)}")
+
+
+async def on_queue_in_group(message: Message) -> None:
+    """/admin in the witness group: profile cards are never posted to a group."""
+    await message.answer(texts.ADMIN_QUEUE_IN_GROUP)
+
+
+def create_group_router() -> Router:
+    """Admin commands in the witness group (UserMiddleware lets only WITNESS_CHAT_ID through):
+    /ban and /unban work as in the legacy bot (the answer names a profile number only); /admin
+    points to the private chat."""
+    router = Router(name="admin_group")
+    router.message.filter(F.chat.type != ChatType.PRIVATE)
+    router.message.middleware(AdminMiddleware())
+    router.message.register(on_queue_in_group, Command("admin"))
+    router.message.register(on_ban, Command("ban"))
+    router.message.register(on_unban, Command("unban"))
+    return router
 
 
 def create_router() -> Router:

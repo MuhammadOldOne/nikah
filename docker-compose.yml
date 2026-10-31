@@ -1,5 +1,7 @@
 # Production stack: PostgreSQL 16 + website + Telegram bot + Caddy (automatic HTTPS).
-# Setup: cp .env.example .env, fill it in, then: docker compose up -d --build  (docs/DEPLOY.md)
+# Setup: cp .env.example .env and fill it in (docs/DEPLOY.md). First start and the switch from the
+# legacy bot: docs/CUTOVER.md — before the import start only `docker compose up -d db web [caddy]`:
+# a bare `docker compose up -d` would also start the bot while the legacy one still runs.
 #
 # Variants (combined through COMPOSE_FILE in .env, so every command stays `docker compose ...`):
 #   docker-compose.nginx.yml        the server's nginx serves the site: no Caddy, web on 127.0.0.1

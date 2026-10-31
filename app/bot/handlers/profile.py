@@ -47,6 +47,8 @@ from app.schemas import (
     ABOUT_MAX,
     AGE_MAX,
     AGE_MIN,
+    CHILDREN_MAX,
+    CHILDREN_MIN,
     FIELD_LABELS,
     PROFILE_OPTIONAL_FIELDS,
     PROFILE_REQUIRED_FIELDS,
@@ -98,6 +100,13 @@ CHOICE_FIELDS: dict[str, type[StrEnum]] = {
     "relocation": Relocation,
 }
 SHORTCUTS: dict[str, tuple[str, ...]] = {"children": ("0", "1", "2", "3", "4", "5")}
+# «Дополнить анкету» has no dialog (each press is saved at once), so nothing may invite typing:
+# every allowed value is a button, as on the site's /me/complete.
+COMPLETION_CHOICES: dict[str, tuple[str, ...]] = {
+    "children": tuple(str(n) for n in range(CHILDREN_MIN, CHILDREN_MAX + 1))
+}
+COMPLETION_QUESTIONS: dict[str, str] = {"children": "Сколько у вас детей?"}
+COMPLETION_COLUMNS = 6
 QUESTIONS: dict[str, str] = {
     "gender": "Кто вы?",
     "age": f"Сколько вам лет? (от {AGE_MIN} до {AGE_MAX})",
@@ -141,6 +150,13 @@ class Wizard:
     draft: dict[str, Any] = field(default_factory=dict)
     question_id: int | None = None  # message whose buttons belong to the current step
     number: int | None = None  # editing: the profile's number (for the preview)
+    # Editing: the fields the person answered. Only these are saved: the rest of ``draft`` is a
+    # snapshot that changes made meanwhile (on the site, «Дополнить анкету») must not overwrite.
+    touched: list[str] = field(default_factory=list)
+
+    def answer(self, values: dict[str, Any]) -> None:
+        self.draft.update(values)
+        self.touched.extend(name for name in values if name not in self.touched)
 
     @property
     def steps(self) -> tuple[str, ...]:
@@ -162,6 +178,7 @@ async def _load(state: FSMContext) -> Wizard | None:
         draft=raw["draft"],
         question_id=raw.get("question_id"),
         number=raw.get("number"),
+        touched=list(raw.get("touched", [])),
     )
 
 
@@ -267,7 +284,7 @@ async def show_my_profile(event: Message | CallbackQuery, session: AsyncSession,
 
 def _fillable(profile: Profile) -> list[str]:
     """Missing required fields that one button press fills (the four fields of migrated profiles)."""
-    return [name for name in profiles.missing_fields(profile) if name in CHOICE_FIELDS or name in SHORTCUTS]
+    return [name for name in profiles.missing_fields(profile) if name in CHOICE_FIELDS or name in COMPLETION_CHOICES]
 
 
 async def offer_completion(event: Message | CallbackQuery, session: AsyncSession, user: User) -> None:
@@ -277,7 +294,7 @@ async def offer_completion(event: Message | CallbackQuery, session: AsyncSession
         return
     missing = profiles.missing_fields(profile)
     if missing:
-        await send(event, render.missing_note(missing), keyboards.complete_profile())
+        await send(event, render.missing_note(missing, profile.status), keyboards.complete_profile())
 
 
 async def ask_missing(event: Message | CallbackQuery, session: AsyncSession, user: User) -> None:
@@ -290,17 +307,19 @@ async def ask_missing(event: Message | CallbackQuery, session: AsyncSession, use
     if not fillable:
         missing = profiles.missing_fields(profile)
         if missing:  # a text field (never empty in migrated profiles): the edit wizard handles it
-            await send(event, render.missing_note(missing), _my_profile_buttons(profile))
+            await send(event, render.missing_note(missing, profile.status), _my_profile_buttons(profile))
         else:
-            await send(event, texts.COMPLETED, menu(user))
+            await send(event, render.profile_completed(profile.status), menu(user))
         return
     name = fillable[0]
     left = f"Осталось вопросов: {len(fillable)}"
-    await send(
-        event,
-        f"<i>{left}</i>\n<b>{_question(name, profile.gender)}</b>",
-        keyboards.fill_field(name, _choices(name, profile.gender), columns=len(SHORTCUTS.get(name, ())) or 2),
-    )
+    if name in COMPLETION_CHOICES:
+        question = COMPLETION_QUESTIONS[name]
+        markup = keyboards.fill_field(name, [(v, v) for v in COMPLETION_CHOICES[name]], columns=COMPLETION_COLUMNS)
+    else:
+        question = _question(name, profile.gender)
+        markup = keyboards.fill_field(name, _choices(name, profile.gender))
+    await send(event, f"<i>{left}</i>\n<b>{question}</b>", markup)
 
 
 async def on_fill(callback: CallbackQuery, callback_data: FillCb, session: AsyncSession, user: User) -> None:
@@ -471,7 +490,7 @@ async def on_text_answer(message: Message, state: FSMContext, bot: Bot) -> None:
     if wizard.question_id is not None:
         with contextlib.suppress(TelegramBadRequest):
             await bot.edit_message_reply_markup(chat_id=message.chat.id, message_id=wizard.question_id)
-    wizard.draft.update(values)
+    wizard.answer(values)
     await _advance(message, state, wizard)
 
 
@@ -495,14 +514,14 @@ async def on_field_button(callback: CallbackQuery, callback_data: FieldCb, state
     match callback_data.action:
         case FieldAction.SET if step in CHOICE_FIELDS or step in SHORTCUTS:
             try:
-                wizard.draft.update(_validate(step, callback_data.value))
+                wizard.answer(_validate(step, callback_data.value))
             except InvalidInput as exc:
                 await callback.answer(exc.message, show_alert=True)
                 return
         case FieldAction.KEEP if wizard.mode == Mode.EDIT:
             pass
         case FieldAction.CLEAR if _optional(step):
-            wizard.draft[_field(step)] = None
+            wizard.answer({_field(step): None})
         case FieldAction.FINISH if wizard.mode == Mode.CREATE and _optional(step):
             await callback.answer()
             await edit(callback, f"{message_html(callback)}\n\n✅ Остальное — позже")
@@ -628,8 +647,10 @@ async def _save_changes(
         return
     submitted_before = profile.submitted_at
     try:
-        # Only changed fields are validated: legacy texts that predate today's rules may stay.
-        data = ProfileUpdate.from_form({k: v for k, v in wizard.draft.items() if k != "gender"}, profile)
+        # Only the answered fields are saved, and of them only real changes are validated: legacy
+        # texts that predate today's rules may stay, and edits made elsewhere meanwhile are kept.
+        answered = {name: wizard.draft.get(name) for name in wizard.touched if name != "gender"}
+        data = ProfileUpdate.from_form(answered, profile)
         profile = await profiles.update_profile(session, user, data)
     except ValidationError as exc:
         await exit_flow(state)

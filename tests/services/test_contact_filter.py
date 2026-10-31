@@ -2,12 +2,14 @@
 by «[скрыто свидетелем]», ordinary numbers stay; flags, notice and the per-minute limit."""
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.config import get_settings
 from app.enums import Gender, MessageOrigin
 from app.models import Outbox
-from app.services import chat
+from app.schemas import ProfileUpdate
+from app.services import chat, interests
 from app.services.errors import InvalidInput, MessageRateLimited
 from app.text import CONTACT_PLACEHOLDER, find_contacts, hide_contacts
 
@@ -50,7 +52,24 @@ CONTACTS = [
     "ivan собака mail точка ru",
     "ivan (at) gmail (dot) com",
     "123456789012",
+    # Latin look-alikes, invisible characters and keycaps inside a contact, link-in-bio hosts.
+    "@ivаnov_99",  # Cyrillic «а»
+    "@сосо",  # Cyrillic look-alikes only
+    "@iv\u034fanov_99",  # combining grapheme joiner
+    "t.mе/ivanov",  # Cyrillic «е»
+    "8\u3164912\u3164345\u316467\u316489",  # Hangul filler
+    "8\u2800912\u2800345\u28006789",  # braille blank
+    "8\ufe00912\ufe00345\ufe006789",  # variation selector
+    "8️⃣9️⃣1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣8️⃣9️⃣",  # keycaps
+    "@ivánov_99",
+    "linktr.ee/ivanov",
+    "goo.gl/abc",
+    "is.gd/xyz",
+    "beacons.ai/ivanov",
+    "lnk.bio/ivanov",
 ]
+# An @username glued to the word before it (the legacy filter caught these too).
+GLUED = ["тг@ivanov_99", "ник@ivanov_99", "inst@ivanov_99", "telegram@ivanov99", "пиши@ivanov", "a@ivanov_99"]
 ORDINARY = [
     "мне 25 лет",
     "в 2024 году",
@@ -84,6 +103,10 @@ ORDINARY = [
     "100% согласна",
     "версия 1.2.3",
     "Ин ша Аллах, 2-3 раза в неделю",
+    "Я из Казани.Со мной всё хорошо",
+    "Хорошо.То есть да",
+    "и/или, км/ч",
+    "Привет 👨‍👩‍👧 ❤️ 1️⃣ раз",
 ]
 
 
@@ -92,6 +115,18 @@ def test_contacts_are_hidden(contact: str):
     text, hidden = hide_contacts(f"Пишите: {contact} после обеда")
     assert hidden and text == f"Пишите: {CONTACT_PLACEHOLDER} после обеда"
     assert find_contacts(contact)
+
+
+@pytest.mark.parametrize("contact", GLUED)
+def test_username_glued_to_a_word_is_hidden(contact: str):
+    word, _, handle = contact.partition("@")
+    assert hide_contacts(f"мой {contact}!") == (f"мой {word}{CONTACT_PLACEHOLDER}!", True)
+    assert find_contacts(contact) == [f"@{handle}"]
+
+
+def test_email_stays_one_placeholder():
+    assert hide_contacts("почта ivan@mail.ru, звоните") == (f"почта {CONTACT_PLACEHOLDER}, звоните", True)
+    assert hide_contacts("ivan.petrov@gmail.com") == (CONTACT_PLACEHOLDER, True)
 
 
 @pytest.mark.parametrize("text", ORDINARY)
@@ -126,6 +161,18 @@ async def test_send_message_hides_contacts_flags_and_tells_the_sender(session, m
     assert both.contacts_hidden and both.flag_reason.startswith("contact-leak filter, ")
     with pytest.raises(InvalidInput, match="много ссылок или номеров"):  # stays within the 2000 characters
         await chat.send_message(session, conversation.id, man, "@abc и " * 285, MessageOrigin.WEB)
+
+
+async def test_glued_and_disguised_contacts_in_chats_interests_and_profiles(session, make_pair, make_conversation):
+    man, woman = await make_pair()
+    conversation = await make_conversation(man, woman)
+    for text in ("мой тг@ivan_1990", "пишите @ivаnov_99", "8\u3164912\u3164345\u316467\u316489", "linktr.ee/ivan"):
+        message = await chat.send_message(session, conversation.id, man, text, MessageOrigin.TELEGRAM)
+        assert message.contacts_hidden and message.flag_reason.startswith("contact-leak filter"), text
+    with pytest.raises(InvalidInput):
+        await interests.send_interest(session, woman, man.id, "пишите мне inst@ivan_ov")
+    with pytest.raises(ValidationError):
+        ProfileUpdate(about="Мой инстаграм inst@ivan_ov")
 
 
 async def test_rate_limit_counts_both_channels(session, make_profile, make_conversation, override_settings):

@@ -4,14 +4,14 @@ chat opened/closed notices and reports, and the buttons «⚠️ Пометит�
 
 from __future__ import annotations
 
-from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import TelegramForbiddenError, TelegramMigrateToChat, TelegramRetryAfter
 from aiogram.types import ForceReply
 from sqlalchemy import select
 
 from app.bot import texts
 from app.enums import ConversationCloseReason, MessageKind, MessageOrigin, ReportReason
-from app.models import Message, User
-from app.services import chat, guardians, moderation, witness
+from app.models import Message, Outbox, User
+from app.services import chat, guardians, meta, moderation, witness
 from tests.bot.conftest import SEND_METHOD, buttons
 
 GROUP = -1001234567890
@@ -99,16 +99,72 @@ async def test_group_flood_control_delays_but_never_drops_a_copy(
     await _drain(worker)
     bot.sent.clear()
     flood = TelegramRetryAfter(SEND_METHOD, "Too Many Requests", retry_after=0)
-    bot.fail(GROUP, *[flood] * 5)  # more than MAX_FLOOD_RETRIES in a row
+    bot.fail(GROUP, *[flood] * 5)
     await chat.send_message(session, conversation.id, man, "Салам", MessageOrigin.WEB)
+    await chat.send_message(session, conversation.id, woman, "Ва алейкум салам", MessageOrigin.WEB)
+    await session.commit()
+
+    # The group's flood control holds only the group: both partners got their messages at once.
+    await worker.process_batch()
+    assert not worker.telegram_unavailable and bot.to(GROUP) == []
+    assert _texts(bot.to(woman))[-1].endswith("Салам") and _texts(bot.to(man))[-1].endswith("Ва алейкум салам")
+    await _drain(worker)
+
+    assert _texts(bot.to(GROUP)) == [
+        f"Чат #{conversation.id} | №500 → №501 (сайт)\nСалам",
+        f"Чат #{conversation.id} | №501 → №500 (сайт)\nВа алейкум салам",
+    ]
+    assert len(bot.to(woman)) == 1 and len(bot.to(man)) == 1  # the partners got the messages once
+
+
+async def test_a_long_group_flood_holds_its_rows_until_released(
+    session, bot, worker, make_pair, make_conversation, override_settings
+):
+    override_settings(WITNESS_CHAT_ID=GROUP)
+    man, woman = await make_pair()
+    conversation = await make_conversation(man, woman)
+    await _drain(worker)
+    bot.sent.clear()
+    bot.fail(GROUP, TelegramRetryAfter(SEND_METHOD, "Too Many Requests", retry_after=30))
+    for text in ("Первое", "Второе"):
+        await chat.send_message(session, conversation.id, man, text, MessageOrigin.WEB)
     await session.commit()
 
     await worker.process_batch()
-    assert worker.telegram_unavailable and bot.to(GROUP) == []
+    copies = (
+        await session.scalars(
+            select(Outbox).where(Outbox.kind == "witness.copy").execution_options(populate_existing=True)
+        )
+    ).all()
+    assert [row.sent_at for row in copies] == [None, None] and {row.attempts for row in copies} == {0}
+    assert len({row.next_attempt_at for row in copies}) == 1  # released together, then taken in id order
+    assert _texts(bot.to(woman)) and bot.to(GROUP) == []
+    assert await worker.process_batch() == 0  # nothing is due before the release
+
+
+async def test_a_witness_group_upgraded_to_a_supergroup_keeps_getting_copies(
+    harness, session, bot, worker, make_pair, make_conversation, override_settings
+):
+    override_settings(WITNESS_CHAT_ID=-4001, ADMIN_TELEGRAM_IDS=[ADMIN_TG])
+    man, woman = await make_pair()
+    conversation = await make_conversation(man, woman)
+    await _drain(worker)
+    bot.sent.clear()
+    upgraded = TelegramMigrateToChat(SEND_METHOD, "Bad Request: group chat was upgraded", migrate_to_chat_id=GROUP)
+    bot.fail(-4001, upgraded)
+    await chat.send_message(session, conversation.id, man, "Салам", MessageOrigin.WEB)
+    await chat.send_message(session, conversation.id, woman, "Ва алейкум салам", MessageOrigin.WEB)
+    await session.commit()
     await _drain(worker)
 
-    assert _texts(bot.to(GROUP)) == [f"Чат #{conversation.id} | №500 → №501 (сайт)\nСалам"]
-    assert len(bot.to(woman)) == 1  # the partner got the message once, too
+    assert [text.rsplit("\n", 1)[-1] for text in _texts(bot.to(GROUP))] == ["Салам", "Ва алейкум салам"]
+    assert bot.to(-4001) == [] and bot.to(ADMIN_TG) == []
+    assert await meta.witness_chat_id(session) == GROUP
+    # The witness's buttons work in the new supergroup.
+    copy = await session.scalar(select(Message).order_by(Message.id))
+    await harness.press(ADMIN_TG, f"w:flag:{copy.id}", group_id=GROUP)
+    await session.refresh(copy)
+    assert copy.flagged and "witness" in copy.flag_reason
 
 
 async def test_witness_buttons_in_the_group(
@@ -269,3 +325,23 @@ async def test_witness_message_reaches_the_walis_too(
     [copy] = _texts(bot.to(wali))
     assert copy.startswith("👁 Копия переписки: <b>Анкета №501</b> ↔ <b>Анкета №500</b>")
     assert copy.endswith("<b>Свидетель</b>: Ассаляму алейкум")
+
+
+async def test_ban_and_unban_work_in_the_witness_group_and_admin_points_to_the_private_chat(
+    harness, session, make_pair, make_user, override_settings
+):
+    override_settings(WITNESS_CHAT_ID=GROUP, ADMIN_TELEGRAM_IDS=[ADMIN_TG])
+    man, _ = await make_pair()
+    await harness.text(ADMIN_TG, "/ban №500", group_id=GROUP)
+    await session.refresh(man)
+    assert man.is_banned and harness.last_text(GROUP) == "Пользователь №500 (Анкета №500) заблокирован."
+    await harness.text(ADMIN_TG, f"/unban@nikah_istina_bot {man.telegram_id}", group_id=GROUP)
+    await session.refresh(man)
+    assert not man.is_banned and harness.last_text(GROUP).endswith("(Анкета №500) разблокирован.")
+    await harness.text(ADMIN_TG, "/admin", group_id=GROUP)
+    assert harness.last_text(GROUP) == texts.ADMIN_QUEUE_IN_GROUP
+    # Other members of the group cannot ban.
+    member = await make_user()
+    await harness.text(member, "/ban №500", group_id=GROUP)
+    await session.refresh(man)
+    assert not man.is_banned

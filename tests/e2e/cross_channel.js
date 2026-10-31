@@ -239,6 +239,19 @@ async function main() {
     await shot(sister, "10-own-telegram-reply-on-site");
     await drain("chat"); // includes the witness copies of both messages
 
+    // The chat list on a phone: a long last message is cut with an ellipsis, the time stays in the card.
+    const list = await sister.context().newPage();
+    await list.goto(`${BASE}/chats`);
+    const layout = await list.evaluate(() => {
+      const card = document.querySelector(".chat-list").getBoundingClientRect();
+      const time = document.querySelector(".chat-item .chat-item__time").getBoundingClientRect();
+      return { cardRight: card.right, timeRight: time.right, pageWidth: document.documentElement.scrollWidth };
+    });
+    expect(layout.timeRight <= layout.cardRight + 1, `chat list: the time stays inside the card (${JSON.stringify(layout)})`);
+    expect(layout.pageWidth <= (await list.evaluate(() => window.innerWidth)), "chat list: no horizontal scroll");
+    await shot(list, "10b-chat-list-phone");
+    await list.close();
+
     // e) The witness presses «✍️ Написать в чат» in the witness group: both open pages show it live.
     log("e) witness writes into the chat");
     const witnessText = "Ассаляму алейкум. Напоминаю: обсуждайте никах через вали, без личных встреч.";

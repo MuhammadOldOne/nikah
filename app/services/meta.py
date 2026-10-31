@@ -10,10 +10,13 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clock import utcnow
+from app.config import get_settings
 from app.models import AppMeta
 from app.services.errors import LegacyImportDone
 
 LEGACY_IMPORT_KEY = "legacy_import"
+# Telegram moved the witness group to a supergroup (a new chat id): {"from": old id, "to": new id}.
+WITNESS_CHAT_MIGRATION_KEY = "witness_chat_migration"
 
 
 async def get_value(session: AsyncSession, key: str) -> dict[str, Any] | None:
@@ -49,3 +52,19 @@ async def mark_legacy_import(session: AsyncSession, counts: Mapping[str, int]) -
     )
     if inserted is None:
         raise LegacyImportDone()
+
+
+async def witness_chat_id(session: AsyncSession) -> int | None:
+    """The witness group: WITNESS_CHAT_ID, or the supergroup Telegram upgraded it to (recorded by
+    the bot when Telegram reported the upgrade), until the setting itself is changed."""
+    configured = get_settings().WITNESS_CHAT_ID
+    if configured is None:
+        return None
+    moved = await get_value(session, WITNESS_CHAT_MIGRATION_KEY)
+    if moved is not None and moved.get("from") == configured:
+        return int(moved["to"])
+    return configured
+
+
+async def record_witness_chat_migration(session: AsyncSession, old_chat_id: int, new_chat_id: int) -> None:
+    await set_value(session, WITNESS_CHAT_MIGRATION_KEY, {"from": old_chat_id, "to": new_chat_id})

@@ -89,6 +89,8 @@ def test_0003_upgrades_0002_data_and_downgrades(scratch_database):
     )
     assert [(row["user_id"], row["number"]) for row in numbers] == [(2, 500), (1, 501)]  # by creation time
     assert next_number[0]["n"] == 502
+    [dialogs] = sql(SCRATCH_DB, "SELECT count(*) AS n FROM bot_dialog_states")  # 0004: the bot's dialog state
+    assert dialogs[0]["n"] == 0
     # Legacy states are valid now: an incomplete profile, both directions pending, a second chat,
     # a witness message.
     sql(

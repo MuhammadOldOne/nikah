@@ -145,6 +145,7 @@
 {% if reason == 'closed_by_witness' %}Свидетель завершил этот чат. Если есть вопросы — обратитесь к админу.
 {%- elif reason == 'account_deleted' %}Собеседник удалил аккаунт.
 {%- elif reason == 'user_banned' %}Чат закрыт модератором.
+{%- elif conversation.closed_by_id is none %}Общение завершено.
 {%- elif conversation.closed_by_id == me.id %}Вы завершили общение.
 {%- else %}Собеседник завершил общение.{% endif %}
 {%- endmacro %}

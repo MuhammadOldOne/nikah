@@ -14,7 +14,7 @@ from app.clock import utcnow
 from app.enums import ConversationCloseReason, MessageKind, MessageOrigin
 from app.models import Conversation, Message, User
 from app.schemas import ChatMessageIn, first_error
-from app.services import chat, events, guardians, users
+from app.services import chat, events, guardians, interests, users
 from app.services.errors import ConversationClosed, ConversationNotFound, InvalidInput, MessageNotFound, WitnessOnly
 
 WITNESS_FLAG_REASON = "witness"
@@ -84,12 +84,17 @@ async def witness_say(
 
 async def witness_close(session: AsyncSession, actor: User, conversation_id: int) -> Conversation:
     """«🚫 Закрыть чат»: close with reason 'closed_by_witness' (``closed_by_id`` = the actor). The pair
-    cannot open a new chat through interests afterwards (services.interests)."""
+    cannot open a new chat through interests afterwards (services.interests): pending interests
+    between them in either direction are cancelled, and new ones and accepts are refused."""
     _require_witness(actor)
     conversation = await session.get(Conversation, conversation_id)
     if conversation is None:
         raise ConversationNotFound()
-    if not conversation.is_open:
+    closed = conversation.is_open and await chat.force_close(
+        session, conversation, ConversationCloseReason.CLOSED_BY_WITNESS, closed_by_id=actor.id
+    )
+    if not closed:
         raise ConversationClosed("Чат уже закрыт.")
-    await chat.force_close(session, conversation, ConversationCloseReason.CLOSED_BY_WITNESS, closed_by_id=actor.id)
+    if conversation.user_a_id is not None and conversation.user_b_id is not None:
+        await interests.cancel_pending_between(session, conversation.user_a_id, conversation.user_b_id)
     return conversation

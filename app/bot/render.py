@@ -161,13 +161,30 @@ def profile_card(profile: Profile, *, has_guardian: bool = False, about_limit: i
     return "\n".join(lines)
 
 
-def missing_note(missing: Sequence[str]) -> str:
-    """The «Дополнить анкету» invitation for a profile that lacks required fields."""
+def missing_note(missing: Sequence[str], status: ProfileStatus) -> str:
+    """The «Дополнить анкету» invitation for a profile that lacks required fields. Choice edits keep
+    a published (or hidden) profile as it is; any edit sends a rejected one back to moderation."""
     names = ", ".join(FIELD_LABELS[name].lower() for name in missing)
+    match status:
+        case ProfileStatus.ACTIVE | ProfileStatus.HIDDEN:
+            moderation = ", повторная модерация не нужна."
+        case ProfileStatus.PENDING:
+            moderation = ". Анкета пока на модерации."
+        case _:
+            moderation = ". После этого анкета снова уйдёт на модерацию."
     return (
         f"В вашей анкете не заполнено: {names}. Пока это так, у других людей там написано «{UNKNOWN}».\n"
-        "Дополните анкету — это займёт 1 минуту, каждое поле — одна кнопка, повторная модерация не нужна."
+        f"Дополните анкету — это займёт 1 минуту, каждое поле — одна кнопка{moderation}"
     )
+
+
+def profile_completed(status: ProfileStatus) -> str:
+    """The thanks after «Дополнить анкету», by the status the profile has now."""
+    if status == ProfileStatus.ACTIVE:
+        return "Спасибо! Анкета дополнена, модерация не нужна. Барака Аллаху фикум."
+    if status == ProfileStatus.PENDING:
+        return "Спасибо! Анкета дополнена. Она на модерации — мы сообщим, когда её одобрят."
+    return "Спасибо! Анкета дополнена. Барака Аллаху фикум."
 
 
 def profile_status(profile: Profile) -> str:
@@ -186,7 +203,7 @@ def profile_status(profile: Profile) -> str:
 
 def my_profile(profile: Profile, missing: Sequence[str] = ()) -> str:
     text = f"{profile_card(profile, about_limit=ABOUT_SHORT_LIMIT)}\n\n{profile_status(profile)}"
-    return f"{text}\n\n{missing_note(missing)}" if missing else text
+    return f"{text}\n\n{missing_note(missing, profile.status)}" if missing else text
 
 
 def profile_version(profile: Profile) -> int:

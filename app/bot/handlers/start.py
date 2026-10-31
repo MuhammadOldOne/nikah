@@ -45,7 +45,7 @@ def welcome() -> str:
 async def greet(message: Message, state: FSMContext, session: AsyncSession, user: User) -> None:
     await message.answer(welcome(), reply_markup=menu(user))
     if consent.gated(user):
-        await consent.ask(message, state)
+        await consent.ask(message)
     else:
         await offer_completion(message, session, user)
 
@@ -134,7 +134,7 @@ async def _show_profile(message: Message, state: FSMContext, session: AsyncSessi
         await message.answer(texts.PROFILE_REQUIRED, reply_markup=keyboards.create_profile())
         return
     except ConsentRequired:
-        await consent.ask(message, state)
+        await consent.ask(message)
         return
     except DomainError as exc:
         await message.answer(esc(exc.message), reply_markup=menu(user))

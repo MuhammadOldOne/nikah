@@ -13,9 +13,10 @@ from sqlalchemy.orm import selectinload
 from app.clock import utcnow
 from app.config import get_settings
 from app.enums import ConversationCloseReason, GuardianStatus, InterestStatus
-from app.models import Conversation, Guardian, Interest, Profile, User
+from app.models import BotDialogState, Conversation, Guardian, Interest, Profile, User
 from app.services import chat
 from app.services.errors import AdminBanDenied, ConsentRequired, InvalidInput
+from app.services.relations import lock_users
 
 LAST_SEEN_INTERVAL = timedelta(minutes=1)
 _PROFILE_REF = re.compile(r"(?:№|#)\s*(\d{1,9})")
@@ -188,6 +189,9 @@ async def delete_account(session: AsyncSession, user: User) -> None:
     Afterwards the session is cleared (``expunge_all``): do not use previously loaded objects.
     """
     user_id = user.id
+    # Lock the users row first (lock order, §3): an accept that is opening a chat with this user
+    # either commits before (and its conversation is closed below) or waits and then finds no user.
+    await lock_users(session, user_id)
     conversations = await session.scalars(
         select(Conversation).where(or_(Conversation.user_a_id == user_id, Conversation.user_b_id == user_id))
     )
@@ -199,6 +203,8 @@ async def delete_account(session: AsyncSession, user: User) -> None:
             await chat.force_close(session, conversation, ConversationCloseReason.ACCOUNT_DELETED)
     if orphaned:
         await session.execute(delete(Conversation).where(Conversation.id.in_(orphaned)))
+    # Dialog drafts in the bot (profile texts, a report comment…) are keyed by the Telegram id.
+    await session.execute(delete(BotDialogState).where(BotDialogState.telegram_user_id == user.telegram_id))
     await session.flush()
     await session.execute(delete(User).where(User.id == user_id))
     session.expunge_all()

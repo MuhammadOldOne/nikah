@@ -955,7 +955,8 @@ details.more > .more__body { padding: 4px 16px 20px; display: grid; gap: 20px; }
 
 /* ---------- Chats ---------- */
 
-.chat-list { display: grid; margin: 0; padding: 0; list-style: none; overflow: hidden; }
+/* minmax(0, 1fr): a long nowrap preview must shrink (ellipsis), not widen the row past the card. */
+.chat-list { display: grid; grid-template-columns: minmax(0, 1fr); margin: 0; padding: 0; list-style: none; overflow: hidden; }
 .chat-list li + li { border-top: 1px solid var(--border); }
 .chat-item { display: flex; gap: 12px; align-items: center; padding: 14px 16px; color: var(--text); text-decoration: none; min-height: 72px; }
 .chat-item:hover { background: var(--bg-soft); color: var(--text); }
@@ -964,7 +965,7 @@ details.more > .more__body { padding: 4px 16px 20px; display: grid; gap: 20px; }
 .chat-item__name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-item__time { color: var(--text-muted); font-size: 0.8rem; flex: none; }
 .chat-item__bottom { display: flex; justify-content: space-between; gap: 8px; align-items: center; margin-top: 2px; }
-.chat-item__preview { color: var(--text-muted); font-size: 0.92rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-item__preview { min-width: 0; color: var(--text-muted); font-size: 0.92rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-item.is-unread .chat-item__preview { color: var(--text); font-weight: 600; }
 .chat-item.is-closed { opacity: 0.75; }
 

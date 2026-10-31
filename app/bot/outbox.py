@@ -5,11 +5,18 @@ seconds, locks due rows with FOR UPDATE SKIP LOCKED (several bot processes are s
 messages from current database data (payloads carry IDs only; rows that no longer exist are
 skipped) and sends them. Delivery is at least once.
 
-When Telegram cannot be reached (network or server errors, persistent flood control), the batch
-stops at that row and the worker pauses with a growing delay: an outage is not the row's fault,
-so no attempt is counted and nothing is given up, however long it lasts, and later messages never
-overtake earlier ones. Attempts (and giving up after events.MAX_ATTEMPTS) are for failures of
-one row only, such as a message that cannot be built.
+When Telegram cannot be reached (network or server errors), the batch stops at that row and the
+worker pauses with a growing delay: an outage is not the row's fault, so no attempt is counted and
+nothing is given up, however long it lasts, and later messages never overtake earlier ones.
+
+Flood control is per chat (a group, e.g. the witness group, takes about 20 messages a minute): the
+chat is held until Telegram's ``retry_after`` and every row for it is deferred to that moment (no
+attempt counted), while rows for other chats go on. Rows held for one chat become due together and
+are taken in id order, so a chat still gets its messages in order. Chats a row already reached are
+remembered, so its retry does not send them again (within this process).
+
+Attempts (and giving up after events.MAX_ATTEMPTS) are for failures of one row only, such as a
+message that cannot be built.
 
 Building (DB reads + pure rendering in app.bot.render) is separate from sending.
 """
@@ -21,12 +28,15 @@ import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from enum import Enum
 from typing import Any, TypeGuard
 
 from aiogram import Bot
 from aiogram.exceptions import (
     TelegramBadRequest,
     TelegramForbiddenError,
+    TelegramMigrateToChat,
     TelegramNetworkError,
     TelegramNotFound,
     TelegramRetryAfter,
@@ -36,13 +46,14 @@ from aiogram.exceptions import (
 from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot import render
+from app.bot import render, storage
+from app.clock import utcnow
 from app.config import get_settings
 from app.db import session_scope
 from app.enums import ConversationCloseReason, InterestStatus, ProfileStatus, ReportStatus
 from app.logutil import exc_summary
 from app.models import Conversation, Interest, Message, Outbox, User
-from app.services import auth, chat, events, guardians, moderation, profiles, users
+from app.services import auth, chat, events, guardians, meta, moderation, profiles, users
 from app.services.events import Event, EventKind
 from app.services.relations import open_conversation_partner_ids
 
@@ -51,12 +62,17 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL = 5.0
 BATCH_SIZE = 20
 SEND_DELAY = 0.05  # about 20 messages per second, below Telegram's limit of 30
-MAX_FLOOD_RETRIES = 3
 HOUSEKEEPING_INTERVAL = 6 * 60 * 60.0
 OUTAGE_PAUSE_MIN = 5.0
 OUTAGE_PAUSE_MAX = 300.0
 # Errors that say nothing about the message itself: Telegram is unreachable or refuses everything.
-TELEGRAM_UNAVAILABLE = (TelegramNetworkError, TelegramServerError, TelegramRetryAfter, TelegramUnauthorizedError)
+TELEGRAM_UNAVAILABLE = (TelegramNetworkError, TelegramServerError, TelegramUnauthorizedError)
+
+
+class Outcome(Enum):
+    SENT = "sent"  # delivered (now or by an earlier try of the row)
+    REFUSED = "refused"  # blocked by the recipient or rejected by Telegram: retrying cannot help
+    HELD = "held"  # flood control for this chat: try again later
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,7 +265,7 @@ async def _to_witness(session: AsyncSession, rendered: render.Rendered) -> list[
     """The witness: WITNESS_CHAT_ID (falling back to the admins if Telegram refuses that chat), or
     each admin privately when it is unset."""
     admin_ids = await users.admin_telegram_ids(session)
-    witness_chat = get_settings().WITNESS_CHAT_ID
+    witness_chat = await meta.witness_chat_id(session)
     if witness_chat is None:
         return [Delivery.of(telegram_id, rendered) for telegram_id in admin_ids]
     return [Delivery.of(witness_chat, rendered, fallback=tuple(admin_ids))]
@@ -291,7 +307,7 @@ async def _witness_conversation_closed(session: AsyncSession, row: Outbox) -> li
 
 async def _witness_report(session: AsyncSession, row: Outbox) -> list[Delivery]:
     """Only to the witness group: the admins already get the report card (report.created)."""
-    witness_chat = get_settings().WITNESS_CHAT_ID
+    witness_chat = await meta.witness_chat_id(session)
     report = await moderation.get_report(session, row.payload["report_id"])
     if witness_chat is None or report is None:
         return []
@@ -341,6 +357,9 @@ class OutboxWorker:
         self._wakeup = asyncio.Event()
         self._stopped = asyncio.Event()
         self._outage_pause = 0.0  # > 0 while Telegram is unreachable
+        self._held_until: dict[int, datetime] = {}  # chat id -> end of Telegram's flood control
+        self._held_in_batch: set[int] = set()  # chats held during this batch: later rows wait too
+        self._reached: dict[int, set[int]] = {}  # row id -> chats a deferred row already reached
 
     @property
     def telegram_unavailable(self) -> bool:
@@ -374,13 +393,14 @@ class OutboxWorker:
                     await asyncio.wait_for(self._stopped.wait(), self._outage_pause)
             elif not self._stopped.is_set():
                 with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(self._wakeup.wait(), self._poll_interval)
+                    await asyncio.wait_for(self._wakeup.wait(), self._next_wait())
         logger.info("outbox worker stopped")
 
     async def process_batch(self) -> int:
         """Deliver one batch of due rows in one transaction; returns how many rows were taken.
 
         Stops at the first row Telegram cannot be reached for (see the module docstring)."""
+        self._held_in_batch = set()
         async with session_scope() as session:
             rows = await events.fetch_pending(session, limit=self._batch_size)
             for row in rows:
@@ -394,6 +414,15 @@ class OutboxWorker:
                 self._outage_pause = 0.0
         return len(rows)
 
+    def _next_wait(self) -> float:
+        """Seconds until the next poll: the poll interval, or sooner when a held chat is released."""
+        now = utcnow()
+        self._held_until = {chat_id: until for chat_id, until in self._held_until.items() if until > now}
+        if not self._held_until:
+            return self._poll_interval
+        released = (min(self._held_until.values()) - now).total_seconds()
+        return min(self._poll_interval, max(released, 0.0))
+
     async def _process(self, session: AsyncSession, row: Outbox) -> bool:
         """Deliver one row. Returns False (row untouched) if Telegram could not be reached."""
         try:
@@ -403,61 +432,97 @@ class OutboxWorker:
             logger.error("outbox %s (%s): building messages failed: %s", row.id, row.kind, exc_summary(exc))
             await events.mark_failed(session, row, f"build: {type(exc).__name__}")
             return True
+        reached = self._reached.get(row.id, set())
+        held: list[int] = []
         try:
             for delivery in deliveries:
-                if not await self._send(row, delivery.telegram_id, delivery) and delivery.fallback:
+                targets = [delivery.telegram_id]
+                outcome = await self._deliver(session, row, delivery.telegram_id, delivery, reached)
+                if outcome is Outcome.REFUSED and delivery.fallback:
                     logger.warning(
                         "outbox %s (%s): the witness chat refused the message, sent to admins", row.id, row.kind
                     )
-                    for telegram_id in delivery.fallback:
-                        await self._send(row, telegram_id, delivery)
+                    targets = list(delivery.fallback)
+                    outcomes = [await self._deliver(session, row, t, delivery, reached) for t in targets]
+                else:
+                    outcomes = [outcome]
+                held += [target for target, result in zip(targets, outcomes, strict=True) if result is Outcome.HELD]
         except TELEGRAM_UNAVAILABLE as exc:
             logger.warning("outbox %s (%s): Telegram unavailable: %s", row.id, row.kind, type(exc).__name__)
+            self._reached[row.id] = reached
             return False
         except Exception as exc:  # unexpected and specific to this row: retry later with backoff
             logger.error("outbox %s (%s): delivery failed: %s", row.id, row.kind, exc_summary(exc))
+            self._reached[row.id] = reached
             await events.mark_failed(session, row, f"send: {type(exc).__name__}")
+            if row.failed_at is not None:
+                self._reached.pop(row.id, None)
             return True
+        if held:
+            # The earliest release: the row is retried then and waits again for chats still held.
+            self._reached[row.id] = reached
+            await events.defer(session, row, min(self._held_until[chat_id] for chat_id in held))
+            return True
+        self._reached.pop(row.id, None)
         await events.mark_sent(session, row)
         return True
 
-    async def _send(self, row: Outbox, telegram_id: int, delivery: Delivery) -> bool:
-        """Send one message; returns whether it was delivered. Flood control (also a group's rate
-        limit, e.g. the witness chat): wait and retry a few times, then the batch pauses with the
-        row untouched, so nothing is dropped. A recipient who blocked the bot or a message Telegram
-        rejects is skipped (retrying cannot help). Other errors propagate."""
-        flood_retries = 0
-        delivered = False
-        while True:
-            try:
-                await self._bot.send_message(
-                    chat_id=telegram_id, text=delivery.text, reply_markup=delivery.reply_markup
-                )
-                delivered = True
-            except TelegramRetryAfter as exc:
-                flood_retries += 1
-                if flood_retries > MAX_FLOOD_RETRIES:
-                    raise
-                logger.warning("outbox %s: flood control, retrying in %s s", row.id, exc.retry_after)
-                await asyncio.sleep(exc.retry_after)
-                continue
-            except TelegramForbiddenError:
-                logger.info("outbox %s (%s): recipient blocked the bot, skipped", row.id, row.kind)
-            except (TelegramBadRequest, TelegramNotFound) as exc:
-                logger.warning("outbox %s (%s): Telegram rejected the message: %.200s", row.id, row.kind, exc.message)
-            break
+    async def _deliver(
+        self, session: AsyncSession, row: Outbox, telegram_id: int, delivery: Delivery, reached: set[int]
+    ) -> Outcome:
+        """Send one message unless the row already reached this chat or the chat is held by flood
+        control. A recipient who blocked the bot or a message Telegram rejects is refused (retrying
+        cannot help); a group Telegram moved to a supergroup gets it at its new id. Errors that
+        concern Telegram as a whole propagate."""
+        if telegram_id in reached:
+            return Outcome.SENT
+        held_until = self._held_until.get(telegram_id)
+        if telegram_id in self._held_in_batch or (held_until is not None and held_until > utcnow()):
+            return Outcome.HELD
+        try:
+            await self._bot.send_message(chat_id=telegram_id, text=delivery.text, reply_markup=delivery.reply_markup)
+        except TelegramRetryAfter as exc:
+            logger.warning("outbox %s: flood control for one chat, holding it for %s s", row.id, exc.retry_after)
+            self._held_until[telegram_id] = utcnow() + timedelta(seconds=exc.retry_after)
+            self._held_in_batch.add(telegram_id)
+            return Outcome.HELD
+        except TelegramMigrateToChat as exc:
+            return await self._migrated(session, row, telegram_id, exc.migrate_to_chat_id, delivery, reached)
+        except TelegramForbiddenError:
+            logger.info("outbox %s (%s): recipient blocked the bot, skipped", row.id, row.kind)
+            return Outcome.REFUSED
+        except (TelegramBadRequest, TelegramNotFound) as exc:
+            logger.warning("outbox %s (%s): Telegram rejected the message: %.200s", row.id, row.kind, exc.message)
+            return Outcome.REFUSED
+        reached.add(telegram_id)
         await asyncio.sleep(self._send_delay)
-        return delivered
+        return Outcome.SENT
+
+    async def _migrated(
+        self, session: AsyncSession, row: Outbox, old_id: int, new_id: int, delivery: Delivery, reached: set[int]
+    ) -> Outcome:
+        """Telegram upgraded a group (the witness group) to a supergroup with a new id: deliver
+        there, and remember it for later deliveries and for the witness's buttons until
+        WITNESS_CHAT_ID is updated."""
+        if old_id == get_settings().WITNESS_CHAT_ID:
+            await meta.record_witness_chat_migration(session, old_id, new_id)
+            logger.warning("the witness group became a supergroup: set WITNESS_CHAT_ID=%s in .env", new_id)
+        if new_id == old_id:  # never loop on a malformed answer
+            return Outcome.REFUSED
+        return await self._deliver(session, row, new_id, delivery, reached)
 
 
 async def housekeeping(interval: float = HOUSEKEEPING_INTERVAL) -> None:
-    """Periodically remove processed outbox rows and expired login tokens."""
+    """Periodically remove processed outbox rows, expired login tokens and stale dialog states."""
     while True:
         try:
             async with session_scope() as session:
                 rows = await events.purge_processed(session)
                 tokens = await auth.purge_expired_tokens(session)
-            logger.info("housekeeping: removed %d outbox rows and %d login tokens", rows, tokens)
+                dialogs = await storage.purge_expired(session)
+            logger.info(
+                "housekeeping: removed %d outbox rows, %d login tokens and %d dialog states", rows, tokens, dialogs
+            )
         except Exception as exc:
             logger.error("housekeeping failed: %s", exc_summary(exc))
         await asyncio.sleep(interval)

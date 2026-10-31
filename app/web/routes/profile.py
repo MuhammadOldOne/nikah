@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import RedirectResponse, Response
 from pydantic import ValidationError
@@ -27,7 +29,7 @@ from app.services.errors import (
     ProfileNotFound,
     ProfileUnderReview,
 )
-from app.text import profile_title
+from app.text import clean_text, profile_title
 from app.web.deps import (
     CONSENT_PAGE,
     AccountDep,
@@ -132,10 +134,29 @@ async def me(request: Request, session: SessionDep, user: ProfileUserDep) -> Res
     )
 
 
+def _edit_context(values: dict[str, str], errors: dict[str, str], gender: str, original: str) -> dict[str, object]:
+    return form_context(values, errors, gender) | {"original": original}
+
+
+def _edited(values: dict[str, str], original: str | None) -> dict[str, str]:
+    """The fields the person changed in the form: compared with the values the page was rendered
+    with (``original``), so a change made elsewhere meanwhile (the bot, «Дополнить анкету») is not
+    reverted by a stale form. Without a readable original every field counts."""
+    try:
+        shown = json.loads(original) if original else None
+    except ValueError:
+        shown = None
+    fields = [name for name in PROFILE_FIELDS if name != "gender"]
+    if not isinstance(shown, dict):
+        return {name: values[name] for name in fields}
+    return {name: values[name] for name in fields if clean_text(values[name]) != clean_text(str(shown.get(name, "")))}
+
+
 @router.get("/me/edit")
 async def edit(request: Request, session: SessionDep, user: ProfileUserDep) -> Response:
     profile = _own_profile(user)
-    context = form_context(profile_values(profile), {}, profile.gender.value)
+    values = profile_values(profile)
+    context = _edit_context(values, {}, profile.gender.value, json.dumps(values, ensure_ascii=False))
     return await render(request, "profile/edit.html", context, session=session, user=user)
 
 
@@ -150,18 +171,21 @@ def _saved_notice(profile: Profile, resubmitted: bool) -> str:
 @router.post("/me/edit")
 async def edit_submit(request: Request, session: SessionDep, user: ProfileUserDep) -> Response:
     profile = _own_profile(user)
-    values = form_values(await request.form())
+    form = await request.form()
+    values = form_values(form)
+    raw_original = form.get("original")
+    original = raw_original if isinstance(raw_original, str) else ""
     try:
-        data = ProfileUpdate.from_form({name: values[name] for name in PROFILE_FIELDS if name != "gender"}, profile)
+        data = ProfileUpdate.from_form(_edited(values, original), profile)
     except ValidationError as exc:
-        context = form_context(values, humanize_errors(exc), profile.gender.value)
+        context = _edit_context(values, humanize_errors(exc), profile.gender.value, original)
         return await render(request, "profile/edit.html", context, session=session, user=user, status_code=422)
     before, submitted_at = profile_values(profile), profile.submitted_at
     try:
         profile = await profiles.update_profile(session, user, data)
     except DomainError as exc:  # e.g. too many submissions: keep what the person typed
         flash(request, exc.message, "error")
-        context = form_context(values, {}, profile.gender.value)
+        context = _edit_context(values, {}, profile.gender.value, original)
         return await render(request, "profile/edit.html", context, session=session, user=user, status_code=422)
     if profile_values(profile) == before:
         flash(request, "Изменений нет.", "info")
@@ -308,17 +332,19 @@ async def _profile_page(
     )
 
 
-async def _target(session: SessionDep, number: int) -> Profile:
-    """The profile a form on /p/{number} acts on; the services check whether the user may."""
-    profile = await profiles.get_profile_by_number(session, number)
-    if profile is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
-    return profile
+async def _target(session: SessionDep, user: User, number: int) -> Profile:
+    """The profile a form on /p/{number} acts on: only one the viewer may see. Anything else answers
+    404 like a number that does not exist (decision W2), so the forms cannot tell hidden, gated or
+    same-gender profiles from deleted ones; the services check the action itself."""
+    try:
+        return await profiles.get_viewable_profile_by_number(session, user, number)
+    except (ProfileNotFound, ProfileNotActive) as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND) from exc
 
 
 @router.post("/p/{number:int}/interest")
 async def send_interest(request: Request, session: SessionDep, user: ProfileUserDep, number: NumberPath) -> Response:
-    target = await _target(session, number)
+    target = await _target(session, user, number)
     form = await request.form()
     message = form.get("message")
     draft = message if isinstance(message, str) else None
@@ -345,7 +371,7 @@ async def send_interest(request: Request, session: SessionDep, user: ProfileUser
 
 @router.post("/p/{number:int}/report")
 async def report_profile(request: Request, session: SessionDep, user: ProfileUserDep, number: NumberPath) -> Response:
-    target = await _target(session, number)
+    target = await _target(session, user, number)
     if not await submit_report(request, session, user, target.user_id):
         return _redirect(f"/p/{number}")
     flash(

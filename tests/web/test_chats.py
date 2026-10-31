@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 import pytest
 from sqlalchemy import select
 
-from app.enums import Gender, MessageOrigin
+from app.enums import ConversationCloseReason, Gender, MessageOrigin
 from app.models import Message, Report
 from app.services import chat, guardians, users
 from app.services.events import LISTENER_RECONNECTED, Event, EventListener
@@ -123,6 +123,20 @@ async def test_close_conversation(client, dev_login, couple, session):
     response = await client.post(f"/chats/{conversation.id}/messages", data={"csrf_token": csrf, "text": "Ещё"})
     assert response.status_code == 422 and "Общение в этом чате завершено" in response.text
     assert "Вы завершили общение." in page
+
+
+async def test_a_migrated_closed_chat_does_not_blame_either_side(client, dev_login, couple, session):
+    """The import closes legacy chats as closed_by_user without a closer: nobody is told that the
+    other person ended it."""
+    man, woman, conversation = couple
+    await chat.force_close(session, conversation, ConversationCloseReason.CLOSED_BY_USER, closed_by_id=None)
+    await session.commit()
+    for person, other in ((man, woman), (woman, man)):
+        await dev_login(client, person)
+        for page in (f"/chats/{conversation.id}", f"/p/{other.profile.number}"):
+            text = (await client.get(page)).text
+            assert "Общение завершено." in text and "Собеседник завершил общение" not in text, page
+            assert "Вы завершили общение" not in text, page
 
 
 async def test_report_from_chat(client, dev_login, couple, session):

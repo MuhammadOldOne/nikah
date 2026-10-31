@@ -1,15 +1,19 @@
 """Witness (свидетель): admin-only actions and the events that reach the witness chat."""
 
+import asyncio
+
 import pytest
 from sqlalchemy import select
 
-from app.enums import ConversationCloseReason, Gender, MessageKind, MessageOrigin, ReportReason
-from app.models import Message, Outbox
+from app.db import get_sessionmaker
+from app.enums import ConversationCloseReason, Gender, InterestStatus, MessageKind, MessageOrigin, ReportReason
+from app.models import Interest, Message, Outbox, User
 from app.services import chat, guardians, interests, moderation, witness
 from app.services.errors import (
     ConversationClosed,
     ConversationNotFound,
     InterestBlockedByWitness,
+    InterestNotPending,
     InvalidInput,
     MessageNotFound,
     WitnessOnly,
@@ -176,3 +180,60 @@ async def test_message_report_flags_and_notifies_witness_and_admins(session, cha
     with pytest.raises(MessageNotFound):
         await moderation.create_report(session, man, woman.id, ReportReason.INSULT, message_id=message.id)
     assert (await session.scalars(select(Message).where(Message.flagged))).all() == [message]
+
+
+async def test_a_crossed_pending_interest_cannot_undo_a_witness_close(session, make_pair, make_user):
+    """Legacy pairs may hold both directions pending; accepting one opens the chat, the other stays.
+    After the witness closes the chat, the leftover can neither be accepted nor be seen as pending."""
+    man, woman = await make_pair()
+    admin = await make_user(is_admin=True)
+    session.add_all(
+        [Interest(from_user_id=man.id, to_user_id=woman.id), Interest(from_user_id=woman.id, to_user_id=man.id)]
+    )
+    await session.flush()
+    his, hers = (await session.scalars(select(Interest).order_by(Interest.id))).all()
+    conversation = await interests.accept(session, his.id, woman)
+    await witness.witness_close(session, admin, conversation.id)
+    await session.refresh(hers)
+    assert hers.status == InterestStatus.CANCELLED
+    assert await interests.list_incoming(session, man) == []
+    with pytest.raises(InterestNotPending):
+        await interests.accept(session, hers.id, man)
+    # Even a pending interest that survived (e.g. written by the import) cannot reopen the pair.
+    hers.status = InterestStatus.PENDING
+    await session.flush()
+    with pytest.raises(InterestBlockedByWitness):
+        await interests.accept(session, hers.id, man)
+    assert await chat.open_conversations(session, man) == []
+
+
+async def test_a_witness_close_and_a_user_close_at_once_keep_the_witness_reason(session, chat_and_admin):
+    """Both closes lock the conversation row: the second one finds it closed and changes nothing."""
+    man, woman, conversation, admin = chat_and_admin
+
+    async def close(by_witness: bool) -> str:
+        async with get_sessionmaker()() as own:
+            try:
+                if by_witness:
+                    await witness.witness_close(own, await own.get(User, admin.id), conversation.id)
+                else:
+                    closer = await own.get(User, woman.id)
+                    target = await chat.get_conversation_for_participant(own, conversation.id, closer)
+                    await chat.close_conversation(own, target, closer)
+                await asyncio.sleep(0.1)  # hold the row lock: the other close must wait for it
+                await own.commit()
+                return "closed"
+            except ConversationClosed:
+                await own.rollback()
+                return "already"
+
+    witness_first = asyncio.create_task(close(by_witness=True))
+    await asyncio.sleep(0.03)
+    results = [await close(by_witness=False), await witness_first]
+    assert sorted(results) == ["already", "closed"]
+    await session.refresh(conversation)
+    assert conversation.close_reason == ConversationCloseReason.CLOSED_BY_WITNESS
+    assert len(await rows(session, "conversation.closed")) == 1
+    assert len(await rows(session, "witness.conversation_closed")) == 1
+    with pytest.raises(InterestBlockedByWitness):
+        await interests.send_interest(session, man, woman.id)

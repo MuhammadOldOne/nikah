@@ -18,7 +18,7 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot import keyboards, render, texts
-from app.bot.callbacks import ChatAction, ChatCb, MessageReportCb
+from app.bot.callbacks import LEGACY_CHAT_CLOSE, ChatAction, ChatCb, MessageReportCb
 from app.bot.handlers import report
 from app.bot.render import esc
 from app.bot.ui import edit, exit_flow, menu, send
@@ -125,14 +125,14 @@ async def _reply(
     await send(callback, header, keyboards.chat_actions(conversation.id, is_open=True))
 
 
-async def ask_close(callback: CallbackQuery, conversation: Conversation, user: User) -> None:
+async def ask_close(callback: CallbackQuery, session: AsyncSession, conversation: Conversation, user: User) -> None:
     if not conversation.is_open:
         raise ConversationClosed()
+    note = await chat.close_note(session, conversation, user)
     await callback.answer()
     await send(
         callback,
-        f"Завершить общение? Собеседник: {render.person_ref(_partner(conversation, user))}.\n"
-        "Писать друг другу будет нельзя, и вы не сможете снова отправить отклик этой анкете.",
+        f"Завершить общение? Собеседник: {render.person_ref(_partner(conversation, user))}.\n{note}",
         keyboards.close_confirm(conversation.id),
     )
 
@@ -149,7 +149,7 @@ async def on_chat_action(
                 await _reply(callback, state, session, user, conversation_id)
             case ChatAction.CLOSE:
                 conversation = await chat.get_conversation_for_participant(session, conversation_id, user)
-                await ask_close(callback, conversation, user)
+                await ask_close(callback, session, conversation, user)
             case ChatAction.CLOSE_CONFIRM:
                 conversation = await chat.get_conversation_for_participant(session, conversation_id, user)
                 await chat.close_conversation(session, conversation, user)
@@ -225,6 +225,13 @@ async def _resolve(session: AsyncSession, target: ReplyTarget) -> int | None:
     return relayed.conversation_id if relayed is not None else None
 
 
+def _only_legacy_chat_buttons(replied: Message) -> bool:
+    """The legacy bot's «Чат открыт…» and «Мой чат» messages carry only «Завершить общение»
+    (chat:close, no chat id): they belong to the only open chat, and say «пишите сюда»."""
+    data = [button.callback_data for row in replied.reply_markup.inline_keyboard for button in row]
+    return bool(data) and all(item == LEGACY_CHAT_CLOSE for item in data)
+
+
 def _misdirected_reply(message: Message) -> str | None:
     """A hint when the text is a «Reply» to a bot message that belongs to no chat (a wali copy, an
     interest or profile card, a menu): it must not silently go to some chat instead."""
@@ -233,9 +240,25 @@ def _misdirected_reply(message: Message) -> str | None:
         return None
     if (replied.text or "").startswith(render.GUARDIAN_COPY_TITLE):
         return texts.REPLY_TO_GUARDIAN_COPY
-    if replied.reply_markup is not None:
+    if replied.reply_markup is not None and not _only_legacy_chat_buttons(replied):
         return texts.REPLY_NOT_TO_CHAT
     return None
+
+
+@dataclass(frozen=True, slots=True)
+class Destination:
+    """Where a plain text goes: ``conversation_id`` (None: the only open chat, or the active one),
+    or nowhere, with ``refusal`` as the hint (a «Reply» to a bot message of no chat)."""
+
+    conversation_id: int | None = None
+    refusal: str | None = None
+
+
+async def destination(message: Message, session: AsyncSession) -> Destination:
+    target = _reply_target(message)
+    if target is None:
+        return Destination(refusal=_misdirected_reply(message))
+    return Destination(conversation_id=await _resolve(session, target))
 
 
 def chat_reply_filter(message: Message) -> bool:
@@ -258,12 +281,11 @@ async def relay_text(message: Message, session: AsyncSession, user: User, *, flo
     if text.startswith("/"):
         await message.answer(texts.UNKNOWN_COMMAND)
         return
-    target = _reply_target(message)
-    if target is None and (hint := _misdirected_reply(message)):
-        await message.answer(hint)
+    where = await destination(message, session)
+    if where.refusal:
+        await message.answer(where.refusal)
         return
-    conversation_id = await _resolve(session, target) if target is not None else None
-    await deliver(message, session, user, text, conversation_id=conversation_id, flow_cancelled=flow_cancelled)
+    await deliver(message, session, user, text, conversation_id=where.conversation_id, flow_cancelled=flow_cancelled)
 
 
 async def deliver(

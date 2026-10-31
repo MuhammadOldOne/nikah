@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import select
 
 from app.bot import texts
-from app.bot.callbacks import AdminProfileCb, CatalogAction, CatalogCb
+from app.bot.callbacks import AdminProfileCb
 from app.enums import Gender, InterestStatus, ProfileStatus
 from app.models import Interest
 from app.services import interests
@@ -78,11 +78,15 @@ async def test_legacy_browse_buttons_reopen_browsing(harness, session, make_prof
     await harness.press(man, "br:close")
     assert type(harness.api.requests[-1]).__name__ == "DeleteMessage"
 
-    await harness.press(man, f"br:int:{second.number}")  # «Написать (заинтересоваться)» on an old card
-    assert harness.last_text(man) == texts.INTEREST_MESSAGE_PROMPT
-    await harness.press(man, CatalogCb(action=CatalogAction.NO_MESSAGE).pack())
+    # «Написать (заинтересоваться)» on an old card: one tap sends the interest, as in the legacy bot.
+    await harness.press(man, f"br:int:{second.number}")
+    assert harness.callback_answers()[-1].text == texts.INTEREST_SENT.format(number=second.number)
     interest = await session.scalar(select(Interest))
-    assert (interest.from_user_id, interest.to_user_id) == (man.id, second.user_id)
+    assert (interest.from_user_id, interest.to_user_id, interest.message) == (man.id, second.user_id, None)
+    # Pressed again: refused at once, like the legacy «Вы уже отправляли заявку…».
+    await harness.press(man, f"br:int:{second.number}")
+    assert harness.callback_answers()[-1].text == "Между вами уже есть отклик или переписка."
+    assert len((await session.scalars(select(Interest))).all()) == 1
 
 
 async def test_legacy_browse_needs_an_approved_profile(harness, make_profile):

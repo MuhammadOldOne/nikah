@@ -21,7 +21,7 @@ import logging
 import random
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -126,6 +126,13 @@ async def fetch_pending(session: AsyncSession, limit: int = 50) -> list[Outbox]:
 
 async def mark_sent(session: AsyncSession, row: Outbox) -> None:
     row.sent_at = utcnow()
+    await session.flush()
+
+
+async def defer(session: AsyncSession, row: Outbox, until: datetime) -> None:
+    """Try the row again at ``until`` without counting an attempt (Telegram's flood control for
+    one chat: not the row's fault, and it must never be given up)."""
+    row.next_attempt_at = until
     await session.flush()
 
 

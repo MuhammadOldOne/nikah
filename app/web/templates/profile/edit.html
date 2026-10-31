@@ -18,6 +18,8 @@
   {% endif %}
   <form class="stack" method="post" action="/me/edit">
     {{ m.csrf_field() }}
+    {# The values the form was shown with: only fields changed here are saved (no stale overwrite). #}
+    <input type="hidden" name="original" value="{{ original }}">
     <section class="card card-pad" aria-labelledby="s1"><h2 id="s1">Основное</h2><div class="form-grid">{{ f.section_basic('edit') }}</div></section>
     <section class="card card-pad" aria-labelledby="s2"><h2 id="s2">Семья и жизнь</h2><div class="form-grid">{{ f.section_life() }}</div></section>
     <section class="card card-pad" aria-labelledby="s3"><h2 id="s3">Пожелания</h2><div class="form-grid">{{ f.section_wishes() }}</div></section>

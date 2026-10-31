@@ -4,8 +4,9 @@ Most legacy formats are the new bot's own (int:acc / int:dec in handlers.interes
 handlers.chats, w:* in handlers.witness, adm:appr / adm:rej in handlers.admin). This router takes
 the rest; every action goes through the services with their usual checks:
 
-- ``br:p:<i>`` / ``br:n:<i>`` (⬅️ / ➡️) reopen browsing at that card, ``br:int:<number>`` starts an
-  interest to that profile, ``br:close`` closes the card, ``br:noop`` does nothing;
+- ``br:p:<i>`` / ``br:n:<i>`` (⬅️ / ➡️) reopen browsing at that card, ``br:int:<number>`` sends an
+  interest to that profile at once, without a message, as the legacy button did; ``br:close`` closes
+  the card, ``br:noop`` does nothing;
 - ``reg:*``: the registration dialog of the old bot is gone — «Анкету заполняем заново»;
 - ``chat:close``: «Завершить общение» of the only open chat (with a confirmation).
 """
@@ -40,7 +41,7 @@ async def on_browse(callback: CallbackQuery, state: FSMContext, session: AsyncSe
             await callback.answer()
             await catalog.show_catalog(callback, state, session, user, page=value + 1, replace=True)
         case "int" if value is not None:
-            await catalog.start_interest(callback, state, user, value)
+            await catalog.start_interest(callback, state, session, user, value, one_tap=True)
         case "close":
             await callback.answer()
             await catalog.close_card(callback)
@@ -67,7 +68,7 @@ async def on_chat_close(callback: CallbackQuery, session: AsyncSession, user: Us
         await chats.show_my_chat(callback, session, user)
         return
     try:
-        await chats.ask_close(callback, open_chats[0], user)
+        await chats.ask_close(callback, session, open_chats[0], user)
     except DomainError as exc:
         await callback.answer(exc.message, show_alert=True)
 
