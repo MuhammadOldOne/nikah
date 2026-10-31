@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Вход — Истина{% endblock %}
+{% block robots %}index, follow{% endblock %}
+{% block head %}<script src="{{ static_url('js/login.js') }}" defer></script>{% endblock %}
+{% block container_class %}container--narrow{% endblock %}
+{% block content %}
+<section class="card card-pad login-card" id="login" data-poll-url="{{ poll_url }}" data-resume="{{ '1' if resumed else '0' }}" aria-labelledby="login-title">
+  <div class="center">
+    {{ m.brand_mark() }}
+    <h1 id="login-title">Вход через Telegram</h1>
+    <p class="muted">Аккаунт на сайте — тот же, что в боте @{{ settings.BOT_USERNAME }}: анкета, отклики и чаты общие.</p>
+  </div>
+
+  <div class="stack">
+    <a class="btn btn-primary btn-lg btn-block" id="tg-login" href="{{ deep_link }}" target="_blank" rel="noopener">{{ m.icon('send') }} Войти через Telegram</a>
+
+    <div class="login-status" id="login-status" role="status" aria-live="polite" hidden>
+      <span class="spinner" aria-hidden="true"></span><span data-text>Ждём подтверждения в Telegram…</span>
+    </div>
+
+    <div id="login-retry" hidden>
+      {% call m.alert('warning', 'Время ожидания истекло') %}<p>Ссылка для входа действует 10 минут. Получите новую и попробуйте ещё раз.</p>{% endcall %}
+      <a class="btn btn-secondary btn-block" href="/login{% if request.query_params.get('next') %}?next={{ request.query_params.get('next')|urlencode }}{% endif %}">Получить новую ссылку</a>
+    </div>
+
+    <ol class="login-steps">
+      <li>Нажмите кнопку — откроется Telegram (приложение или веб-версия).</li>
+      <li>В боте нажмите «Запустить» и подтвердите вход кнопкой.</li>
+      <li>Вернитесь на эту вкладку — вход произойдёт сам.<noscript> Если этого не случилось, обновите страницу.</noscript></li>
+    </ol>
+
+    <details class="more">
+      <summary>Telegram только на телефоне? {{ m.icon('chevron-down') }}</summary>
+      <div class="more__body">
+        <p class="mb-0">Откройте эту ссылку на телефоне (например, перешлите её себе) и подтвердите вход в боте — эта вкладка на компьютере войдёт автоматически. Или откройте <a href="https://web.telegram.org" target="_blank" rel="noopener">web.telegram.org</a> в этом браузере и нажмите кнопку ещё раз.</p>
+        <div class="copy-field">
+          <label class="visually-hidden" for="deep-link">Ссылка для входа</label>
+          <input class="input" id="deep-link" type="text" value="{{ deep_link }}" readonly>
+          <button class="btn btn-secondary" type="button" data-copy="#deep-link" aria-label="Скопировать ссылку">{{ m.icon('copy') }}</button>
+        </div>
+      </div>
+    </details>
+
+    {% if widget_enabled %}
+    <div class="divider">или</div>
+    <div class="tg-widget">
+      <script async src="https://telegram.org/js/telegram-widget.js?22" data-telegram-login="{{ settings.BOT_USERNAME }}" data-size="large" data-radius="12" data-auth-url="{{ settings.SITE_URL }}/auth/telegram" data-request-access="write"></script>
+    </div>
+    {% endif %}
+
+    <p class="small muted center mb-0">Мы получаем только ваш Telegram ID, имя и username — номер телефона не передаётся. Входя, вы принимаете <a href="/rules">правила</a> и <a href="/terms">соглашение</a>.</p>
+  </div>
+</section>
+{% endblock %}

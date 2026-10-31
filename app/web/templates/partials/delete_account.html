@@ -1,0 +1,19 @@
+{# Account deletion with explicit confirmation. Context: back ("/me" or "/settings"). #}
+<section class="card card-pad danger-zone" id="delete" aria-labelledby="delete-title">
+  <h2 id="delete-title">Удаление аккаунта</h2>
+  <p class="muted">Анкета, отклики, ваши сообщения, связь с вали и согласия будут удалены безвозвратно. Собеседники увидят, что вы удалили аккаунт. В боте @{{ settings.BOT_USERNAME }} это делает команда /delete.</p>
+  <details class="confirm-box">
+    <summary class="btn btn-danger-outline">{{ m.icon('trash') }} Удалить аккаунт…</summary>
+    <form class="confirm-box__panel" method="post" action="/me/delete" data-confirm="Удалить аккаунт и все данные без возможности восстановления?">
+      {{ m.csrf_field() }}
+      <input type="hidden" name="back" value="{{ back }}">
+      <label class="check">
+        <input type="checkbox" name="confirm" value="yes" required>
+        <span>Понимаю, что аккаунт и все данные будут удалены и восстановить их нельзя.</span>
+      </label>
+      <div class="row">
+        <button type="submit" class="btn btn-danger">Удалить навсегда</button>
+      </div>
+    </form>
+  </details>
+</section>

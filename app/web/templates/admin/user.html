@@ -1,0 +1,85 @@
+{% extends "admin/base.html" %}
+{% block title %}Пользователь #{{ user.id }}{% endblock %}
+{% block content %}
+<p><a href="/admin/users">← Поиск пользователей</a></p>
+<h1>{{ user.profile.name if user.profile else user.display_name }} <span class="adm-muted">#{{ user.id }}</span>
+  {% if user.is_banned %}<span class="adm-tag adm-tag--danger">заблокирован</span>{% endif %}
+  {% if is_target_admin %}<span class="adm-tag">админ</span>{% endif %}
+</h1>
+
+<div class="adm-grid">
+  <section class="adm-panel">
+    <h2>Аккаунт</h2>
+    <dl class="adm-fields">
+      <div class="adm-field"><dt>Telegram ID</dt><dd>{{ user.telegram_id }}</dd></div>
+      <div class="adm-field"><dt>Username</dt><dd>{{ '@' ~ user.username if user.username else '—' }}</dd></div>
+      <div class="adm-field"><dt>Имя в Telegram</dt><dd>{{ user.first_name or '—' }}</dd></div>
+      <div class="adm-field"><dt>Регистрация</dt><dd>{{ user.created_at|msk }}</dd></div>
+      <div class="adm-field"><dt>Последняя активность</dt><dd>{{ user.last_seen_at|msk if user.last_seen_at else '—' }}</dd></div>
+      <div class="adm-field"><dt>Согласие на обработку данных</dt><dd>{{ user.consent_at|msk if user.consent_at else 'нет' }}</dd></div>
+      {% if user.is_banned %}<div class="adm-field"><dt>Заблокирован</dt><dd>{{ user.banned_at|msk if user.banned_at else 'да' }}</dd></div>{% endif %}
+    </dl>
+  </section>
+
+  <section class="adm-panel">
+    <h2>Модерация</h2>
+    <dl class="adm-fields">
+      <div class="adm-field"><dt>Жалобы на пользователя</dt><dd>{{ reports_total }}</dd></div>
+      <div class="adm-field"><dt>Жалобы от пользователя</dt><dd>{{ reports_filed }}</dd></div>
+      <div class="adm-field"><dt>Сообщения со стоп-словами</dt><dd>{{ flagged_messages }}</dd></div>
+    </dl>
+    {% if user.is_banned %}
+    <form method="post" action="/admin/users/{{ user.id }}/unban" class="adm-actions">
+      {{ am.csrf() }}{{ am.back() }}
+      <button type="submit" class="adm-btn">Разблокировать</button>
+    </form>
+    <p class="adm-hint">Закрытые чаты, отменённые отклики и отключённый вали не восстанавливаются.</p>
+    {% elif is_target_admin %}
+    <p class="adm-hint">Администратора нельзя заблокировать из панели.</p>
+    {% else %}
+    <details class="adm-confirm">
+      <summary class="adm-btn adm-btn--danger">Заблокировать…</summary>
+      <form method="post" action="/admin/users/{{ user.id }}/ban">
+        {{ am.csrf() }}{{ am.back() }}
+        <p>Анкета исчезнет из каталога, отклики будут отменены, чаты закрыты, вали отключён. Войти на сайт пользователь не сможет.</p>
+        <button type="submit" class="adm-btn adm-btn--danger">Да, заблокировать</button>
+      </form>
+    </details>
+    {% endif %}
+  </section>
+</div>
+
+<section class="adm-panel">
+  <h2>Анкета</h2>
+  {% if user.profile %}
+  {% set profile = user.profile %}
+  <p class="adm-meta">{{ am.profile_status(profile) }} · отправлена {{ profile.submitted_at|msk if profile.submitted_at else '—' }} · изменена {{ profile.updated_at|msk }}</p>
+  {% if profile.moderation_note %}<p class="adm-meta">Причина отклонения: {{ profile.moderation_note }}</p>{% endif %}
+  {{ am.flags(profile.flag_reason) }}
+  {{ am.profile_card(profile) }}
+  {% else %}
+  <p class="adm-empty">Анкеты нет.</p>
+  {% endif %}
+</section>
+
+{% if reports %}
+<section class="adm-panel">
+  <h2>Жалобы на пользователя{% if reports_total > reports|length %} (последние {{ reports|length }} из {{ reports_total }}){% endif %}</h2>
+  <div class="adm-scroll">
+  <table class="adm-table adm-table--list">
+    <thead><tr><th scope="col">Дата</th><th scope="col">Причина</th><th scope="col">От кого</th><th scope="col">Статус</th></tr></thead>
+    <tbody>
+      {% for report in reports %}
+      <tr>
+        <td>{{ report.created_at|msk }}</td>
+        <td>{{ label(report.reason) }}{% if report.message %}<br><span class="adm-muted adm-text">«{{ highlight(excerpt(report.message.text, 120)) }}»</span>{% endif %}</td>
+        <td>{{ am.person(report.reporter) }}</td>
+        <td>{% if report.status == enums.ReportStatus.OPEN %}<a href="/admin/reports#r{{ report.id }}">открыта</a>{% else %}{{ label(report.resolution) }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

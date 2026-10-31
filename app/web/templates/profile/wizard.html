@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% import "profile/_fields.html" as f with context %}
+{% block title %}Создание анкеты — Истина{% endblock %}
+{% block head %}<script src="{{ static_url('js/wizard.js') }}" defer></script>{% endblock %}
+{% block container_class %}container--form{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Анкета для никаха</h1>
+    <p class="muted">Около двух минут. Поля со <span class="req">*</span> обязательны, остальное — по желанию. Фото не нужно.</p>
+  </div>
+</div>
+
+{% if errors %}
+<div class="flashes">{% call m.alert('error', 'Проверьте анкету') %}<p>Некоторые поля заполнены неверно — они отмечены ниже.</p>{% endcall %}</div>
+{% endif %}
+
+<nav class="wizard-progress js-only-block" aria-label="Шаги анкеты">
+  <ol>
+    <li data-step-indicator="1">Основное</li>
+    <li data-step-indicator="2">Семья и жизнь</li>
+    <li data-step-indicator="3">Пожелания</li>
+  </ol>
+</nav>
+
+<form id="profile-wizard" class="card card-pad" method="post" action="/profile/new" data-initial-step="{{ initial_step }}" data-gender="{{ gender or '' }}">
+  {{ m.csrf_field() }}
+
+  <section class="wizard-step" data-step="1" aria-labelledby="step1-title">
+    <h2 class="wizard-step__title" id="step1-title" tabindex="-1">Основное</h2>
+    <p class="muted small js-only-block">Шаг 1 из 3</p>
+    <div class="form-grid">{{ f.section_basic('create') }}</div>
+    <div class="wizard-nav js-only">
+      <span></span>
+      <button type="button" class="btn btn-primary" data-next>Далее {{ m.icon('arrow-right') }}</button>
+    </div>
+  </section>
+
+  <section class="wizard-step" data-step="2" aria-labelledby="step2-title">
+    <h2 class="wizard-step__title" id="step2-title" tabindex="-1">Семья и жизнь</h2>
+    <p class="muted small js-only-block">Шаг 2 из 3</p>
+    <div class="form-grid">{{ f.section_life() }}</div>
+    <div class="wizard-nav js-only">
+      <button type="button" class="btn btn-ghost" data-prev>{{ m.icon('arrow-left') }} Назад</button>
+      <button type="button" class="btn btn-primary" data-next>Далее {{ m.icon('arrow-right') }}</button>
+    </div>
+  </section>
+
+  <section class="wizard-step" data-step="3" aria-labelledby="step3-title">
+    <h2 class="wizard-step__title" id="step3-title" tabindex="-1">Пожелания</h2>
+    <p class="muted small js-only-block">Шаг 3 из 3</p>
+    <div class="form-grid">
+      {{ f.section_wishes() }}
+
+      <fieldset class="field" id="field-consents">
+        <legend>Подтверждения <span class="req" aria-hidden="true">*</span></legend>
+        <div class="stack-sm">
+          <label class="check{% if errors.get('consent_pd') %} is-invalid{% endif %}">
+            <input type="checkbox" name="consent_pd" value="yes" required{% if consents.get('consent_pd') %} checked{% endif %}{{ m.describedby(errors, 'consent_pd') }}>
+            <span>Даю <a href="/consent" target="_blank" rel="noopener">согласие на обработку персональных данных</a>, включая сведения о моих религиозных убеждениях, чтобы подобрать пару для никаха.</span>
+          </label>
+          {{ m.field_error(errors, 'consent_pd') }}
+          <label class="check{% if errors.get('confirm_age') %} is-invalid{% endif %}">
+            <input type="checkbox" name="confirm_age" value="yes" required{% if consents.get('confirm_age') %} checked{% endif %}{{ m.describedby(errors, 'confirm_age') }}>
+            <span>Мне исполнилось 18 лет.</span>
+          </label>
+          {{ m.field_error(errors, 'confirm_age') }}
+          <label class="check{% if errors.get('accept_rules') %} is-invalid{% endif %}">
+            <input type="checkbox" name="accept_rules" value="yes" required{% if consents.get('accept_rules') %} checked{% endif %}{{ m.describedby(errors, 'accept_rules') }}>
+            <span>Принимаю <a href="/rules" target="_blank" rel="noopener">правила сообщества</a> и <a href="/terms" target="_blank" rel="noopener">пользовательское соглашение</a>, {{ f.gtext('свободен', 'свободна', 'свободен(на)') }} для брака и ищу пару только для никаха.</span>
+          </label>
+          {{ m.field_error(errors, 'accept_rules') }}
+        </div>
+      </fieldset>
+
+      {% if settings.PREMODERATION %}
+      <p class="hint mb-0">{{ m.icon('shield', 'icon--sm') }} После отправки анкету проверит модератор. Смотреть чужие анкеты можно будет сразу.</p>
+      {% endif %}
+    </div>
+    <div class="wizard-nav">
+      <button type="button" class="btn btn-ghost js-only" data-prev>{{ m.icon('arrow-left') }} Назад</button>
+      <button type="submit" class="btn btn-primary btn-lg">Создать анкету</button>
+    </div>
+  </section>
+</form>
+{% endblock %}

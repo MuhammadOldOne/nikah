@@ -1,0 +1,50 @@
+{% extends "admin/base.html" %}
+{% block title %}Стоп-слова{% endblock %}
+{% block content %}
+<h1>Стоп-слова</h1>
+<p class="adm-hint">Тексты с признаками мошенничества (переводы денег, карты, крипта, инвестиции и т. п.). Они не блокируются, а только помечаются. Найденные слова выделены. Новые сверху.</p>
+<nav class="adm-tabs" aria-label="Что показать">
+  {% for value, title in kinds.items() %}
+  <a href="/admin/flagged?kind={{ value.value }}"{% if value == kind %} aria-current="page"{% endif %}>{{ title }}</a>
+  {% endfor %}
+</nav>
+
+{% if kind.value == 'messages' %}
+{% for message in items %}
+<article class="adm-card">
+  <p class="adm-meta">{{ message.created_at|msk }} · {{ am.person(message.sender) }} · чат #{{ message.conversation_id }} · через {{ label(message.origin) }}</p>
+  <blockquote class="adm-quote adm-text">{{ highlight(message.text) }}</blockquote>
+</article>
+{% else %}
+<p class="adm-empty">Помеченных сообщений нет.</p>
+{% endfor %}
+
+{% elif kind.value == 'interests' %}
+{% for interest in items %}
+<article class="adm-card">
+  <p class="adm-meta">{{ interest.created_at|msk }} · {{ am.person(interest.from_user) }} → {{ am.person(interest.to_user) }} · отклик {{ label(interest.status) }}</p>
+  <blockquote class="adm-quote adm-text">{{ highlight(interest.message) }}</blockquote>
+</article>
+{% else %}
+<p class="adm-empty">Помеченных откликов нет.</p>
+{% endfor %}
+
+{% else %}
+{% for profile in items %}
+<article class="adm-card">
+  <header class="adm-card__head">
+    <p class="adm-meta">{{ am.person(profile.user) }} · {{ am.profile_summary(profile) }} · изменена {{ profile.updated_at|msk }}</p>
+    {{ am.flags(profile.flag_reason) }}
+  </header>
+  <details>
+    <summary>Анкета целиком</summary>
+    {{ am.profile_card(profile) }}
+  </details>
+</article>
+{% else %}
+<p class="adm-empty">Помеченных анкет нет.</p>
+{% endfor %}
+{% endif %}
+
+{{ am.pager(pager) }}
+{% endblock %}

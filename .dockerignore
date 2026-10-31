@@ -1,0 +1,32 @@
+# Only app/, migrations/, scripts/, alembic.ini and requirements.txt go into the image.
+.git
+.gitignore
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+node_modules
+
+# Secrets and personal data never go into the image
+.env
+.env.*
+backups
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.sql
+*.sql.gz
+
+# Not needed at runtime
+tests
+docs
+reports
+research_notes
+README.md
+Dockerfile
+.dockerignore
+docker-compose.yml
+Caddyfile

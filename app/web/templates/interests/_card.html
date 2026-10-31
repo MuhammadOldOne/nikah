@@ -1,0 +1,45 @@
+{# One interest card. Context: interest (both users + profiles loaded), user (viewer), wali_ids. #}
+{% import "macros.html" as m with context %}
+{% set incoming = interest.to_user_id == user.id %}
+{% set other = interest.from_user if incoming else interest.to_user %}
+{% set p = other.profile if other else none %}
+<li class="card icard" id="interest-{{ interest.id }}">
+  <div class="icard__head">
+    {{ m.avatar(p.gender if p else 'male') }}
+    <div class="icard__who">
+      {% if p %}
+      <a href="/u/{{ p.user_id }}">{{ p.name }}, {{ p.birth_year|age }}&nbsp;{{ plural(p.birth_year|age, 'год', 'года', 'лет') }}</a>
+      <div class="icard__meta">{{ p.city }} · {{ label(p.marital_status, p.gender) }} · {{ interest.created_at|msk('%d.%m.%Y') }}</div>
+      {% else %}
+      <span>Анкета удалена</span>
+      {% endif %}
+    </div>
+    {% if other and other.id in wali_ids %}{{ m.wali_badge(short=true) }}{% endif %}
+  </div>
+  {% if interest.message %}<p class="icard__message">{{ interest.message }}</p>{% endif %}
+
+  {% set st = interest.status.value %}
+  {% if incoming and st == 'pending' %}
+  <div class="icard__actions">
+    <form method="post" action="/interests/{{ interest.id }}/accept" hx-post="/interests/{{ interest.id }}/accept">
+      {{ m.csrf_field() }}<button class="btn btn-primary" type="submit">{{ m.icon('check') }} Принять и начать чат</button>
+    </form>
+    <form method="post" action="/interests/{{ interest.id }}/decline" hx-post="/interests/{{ interest.id }}/decline" hx-target="#interest-{{ interest.id }}" hx-swap="outerHTML" hx-confirm="Отклонить отклик? Отправитель не сможет откликнуться повторно.">
+      {{ m.csrf_field() }}<button class="btn btn-ghost" type="submit">{{ m.icon('x') }} Отклонить</button>
+    </form>
+  </div>
+  {% elif not incoming and st == 'pending' %}
+  <div class="icard__actions">
+    <span class="pill pill--warning">{{ m.icon('clock', 'icon--sm') }} Ожидает ответа</span>
+    <form method="post" action="/interests/{{ interest.id }}/cancel" hx-post="/interests/{{ interest.id }}/cancel" hx-target="#interest-{{ interest.id }}" hx-swap="outerHTML" hx-confirm="Отозвать отклик?">
+      {{ m.csrf_field() }}<button class="btn btn-ghost" type="submit">Отозвать</button>
+    </form>
+  </div>
+  {% elif st == 'accepted' %}
+  <div class="icard__actions"><span class="pill pill--success">{{ m.icon('check', 'icon--sm') }} Принят</span> <a class="btn btn-secondary" href="/chats">{{ m.icon('chat') }} К чатам</a></div>
+  {% elif st == 'declined' %}
+  <p class="icard__status muted mb-0">{% if incoming %}Вы отклонили этот отклик.{% else %}Отклик отклонён. Пусть Аллах пошлёт вам лучшее.{% endif %}</p>
+  {% else %}
+  <p class="icard__status muted mb-0">Отклик отозван.</p>
+  {% endif %}
+</li>

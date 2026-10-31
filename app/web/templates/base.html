@@ -1,0 +1,88 @@
+{% import "macros.html" as m with context %}
+{% set path = request.url.path %}
+{% set show_tabbar = user and user.profile and not minimal %}
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{% block title %}Истина — знакомство для никаха{% endblock %}</title>
+  <meta name="robots" content="{% block robots %}noindex, nofollow{% endblock %}">
+  <meta name="description" content="{% block description %}Истина — знакомство для никаха без фото: отклик, взаимное согласие, переписка с участием вали. Сайт и Telegram-бот @{{ settings.BOT_USERNAME }}.{% endblock %}">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#0e5a48" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0e1513" media="(prefers-color-scheme: dark)">
+  <meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false,"historyCacheSize":0,"refreshOnHistoryMiss":true,"selfRequestsOnly":true}'>
+  <link rel="icon" href="{{ static_url('img/favicon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ static_url('css/app.css') }}">
+  <script src="{{ static_url('js/early.js') }}"></script>
+  <script src="{{ static_url('vendor/htmx.min.js') }}" defer></script>
+  <script src="{{ static_url('js/app.js') }}" defer></script>
+  {% block head %}{% endblock %}
+</head>
+<body class="{% if show_tabbar %}has-tabbar{% endif %} {% block body_class %}{% endblock %}"
+  {%- if user and not minimal %} hx-headers='{"X-CSRF-Token": "{{ csrf_token() }}"}' data-csrf="{{ csrf_token() }}"{% endif %}
+  {%- if user and not minimal and not user.is_banned %} data-stream="{% block stream_url %}/events{% endblock %}"{% endif %}>
+  <a class="skip-link" href="#main">Перейти к содержимому</a>
+  <header class="site-header">
+    <div class="container site-header__inner">
+      <a class="brand" href="/" aria-label="Истина — на главную">{{ m.brand_mark() }}<span>Истина</span></a>
+      {% if user and not minimal %}
+      <nav class="nav-desktop" aria-label="Основная навигация">
+        <a href="/catalog"{% if path.startswith('/catalog') or path.startswith('/u/') %} aria-current="page"{% endif %}>{{ m.icon('users') }}Анкеты</a>
+        <a href="/interests"{% if path.startswith('/interests') %} aria-current="page"{% endif %}>{{ m.icon('mail') }}Отклики<span class="badge" data-badge="interests"{% if not (nav and nav.interests) %} hidden{% endif %}>{{ nav.interests if nav else 0 }}</span></a>
+        <a href="/chats"{% if path.startswith('/chats') %} aria-current="page"{% endif %}>{{ m.icon('chat') }}Чаты<span class="badge" data-badge="unread"{% if not (nav and nav.unread) %} hidden{% endif %}>{{ nav.unread if nav else 0 }}</span></a>
+        <a href="/me"{% if path.startswith('/me') or path.startswith('/profile') %} aria-current="page"{% endif %}>{{ m.icon('user') }}Моя анкета</a>
+        <a href="/settings"{% if path.startswith('/settings') %} aria-current="page"{% endif %}>{{ m.icon('settings') }}Настройки</a>
+        {% if is_admin(user) %}<a href="/admin">{{ m.icon('shield') }}Админка</a>{% endif %}
+        <form method="post" action="/logout">{{ m.csrf_field() }}<button type="submit">{{ m.icon('logout') }}Выйти</button></form>
+      </nav>
+      <div class="header-actions header-actions--mobile">
+        {% if is_admin(user) %}<a class="icon-link" href="/admin" aria-label="Админка">{{ m.icon('shield') }}</a>{% endif %}
+        <a class="icon-link" href="/settings" aria-label="Настройки"{% if path.startswith('/settings') %} aria-current="page"{% endif %}>{{ m.icon('settings') }}</a>
+      </div>
+      {% elif not minimal and not path.startswith('/login') %}
+      <div class="header-actions">
+        <a class="btn btn-secondary" href="/login">Войти</a>
+      </div>
+      {% endif %}
+    </div>
+  </header>
+
+  {% block main %}
+  <main id="main" class="page {% block page_class %}{% endblock %}">
+    <div class="container {% block container_class %}{% endblock %}">
+      {% block flashes %}{% if not minimal %}{% include "partials/flashes.html" %}{% endif %}{% endblock %}
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+  {% endblock %}
+
+  {% block footer %}
+  <footer class="site-footer">
+    <div class="container site-footer__grid">
+      <div>
+        <div>© {{ current_year() }} «Истина» — знакомство для никаха. Данные хранятся в России.</div>
+      </div>
+      <nav aria-label="Документы">
+        <a href="/rules">Правила</a>
+        <a href="/terms">Соглашение</a>
+        <a href="/privacy">Конфиденциальность</a>
+        <a href="/consent">Согласие на обработку данных</a>
+        <a href="https://t.me/{{ settings.BOT_USERNAME }}" rel="noopener" target="_blank">Telegram-бот @{{ settings.BOT_USERNAME }}</a>
+      </nav>
+    </div>
+  </footer>
+  {% endblock %}
+
+  {% if show_tabbar %}
+  <nav class="tabbar" aria-label="Разделы">
+    <a href="/catalog"{% if path.startswith('/catalog') or path.startswith('/u/') %} aria-current="page"{% endif %}>{{ m.icon('users') }}<span>Анкеты</span></a>
+    <a href="/interests"{% if path.startswith('/interests') %} aria-current="page"{% endif %}>{{ m.icon('mail') }}<span>Отклики</span><span class="badge" data-badge="interests"{% if not (nav and nav.interests) %} hidden{% endif %}>{{ nav.interests if nav else 0 }}</span></a>
+    <a href="/chats"{% if path.startswith('/chats') %} aria-current="page"{% endif %}>{{ m.icon('chat') }}<span>Чаты</span><span class="badge" data-badge="unread"{% if not (nav and nav.unread) %} hidden{% endif %}>{{ nav.unread if nav else 0 }}</span></a>
+    <a href="/me"{% if path.startswith('/me') or path.startswith('/profile') %} aria-current="page"{% endif %}>{{ m.icon('user') }}<span>Моя анкета</span></a>
+  </nav>
+  {% endif %}
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>

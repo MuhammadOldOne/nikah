@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Чаты — Истина{% endblock %}
+{% block container_class %}container--narrow{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Чаты</h1>
+    <p class="muted">Сообщения синхронизируются с Telegram-ботом @{{ settings.BOT_USERNAME }}.</p>
+  </div>
+</div>
+{% if summaries %}
+<ul class="card chat-list">
+  {% for s in summaries %}
+  {% set c = s.conversation %}{% set p = s.partner_profile %}
+  <li>
+    <a class="chat-item{% if s.unread_count %} is-unread{% endif %}{% if c.closed_at %} is-closed{% endif %}" href="/chats/{{ c.id }}">
+      {{ m.avatar(p.gender if p else 'male') }}
+      <div class="chat-item__body">
+        <div class="chat-item__top">
+          <span class="chat-item__name">{% if s.partner %}{{ p.name if p else s.partner.display_name }}{% else %}Аккаунт удалён{% endif %}</span>
+          <span class="chat-item__time">{% set t = s.last_message.created_at if s.last_message else c.created_at %}{{ t|msk('%d.%m %H:%M') }}</span>
+        </div>
+        <div class="chat-item__bottom">
+          <span class="chat-item__preview">
+            {% if s.last_message %}{% if s.last_message.sender_id == user.id %}Вы: {% endif %}{{ s.last_message.text|truncate(90, true, '…', 0) }}{% else %}Отклик принят — напишите первым{% endif %}
+          </span>
+          {% if s.unread_count %}<span class="badge" aria-label="Непрочитанных: {{ s.unread_count }}">{{ s.unread_count }}</span>
+          {% elif c.closed_at %}<span class="pill">завершён</span>
+          {% elif s.partner_has_guardian %}<span class="pill pill--wali" title="Переписка видна вали">👁 вали</span>{% endif %}
+        </div>
+      </div>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<div class="card empty">
+  <div class="empty__icon">{{ m.icon('chat') }}</div>
+  <h2>Чатов пока нет</h2>
+  <p>Чат открывается, когда отклик приняли. Откликнитесь на анкету или ответьте на входящие отклики.</p>
+  <div class="row"><a class="btn btn-primary" href="/catalog">Смотреть анкеты</a><a class="btn btn-secondary" href="/interests">Отклики</a></div>
+</div>
+{% endif %}
+{% endblock %}

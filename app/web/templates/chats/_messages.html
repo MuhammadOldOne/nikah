@@ -1,0 +1,11 @@
+{# Chat messages (ascending). Context: messages, me, today (Moscow date). #}
+{% for msg in messages %}
+{% set mine = msg.sender_id == me.id %}
+<li class="msg{% if mine %} msg--mine{% endif %}" id="msg-{{ msg.id }}" data-id="{{ msg.id }}">
+  <div class="msg__bubble">{{ msg.text }}</div>
+  <div class="msg__meta">
+    {% if msg.origin.value == 'telegram' %}<span class="msg__origin" title="Отправлено из Telegram-бота">✈️ из Telegram</span> ·{% endif %}
+    <time datetime="{{ msg.created_at.isoformat() }}">{% if (msg.created_at|msk('%Y-%m-%d')) == today.isoformat() %}{{ msg.created_at|msk_time }}{% else %}{{ msg.created_at|msk('%d.%m %H:%M') }}{% endif %}</time>
+  </div>
+</li>
+{% endfor %}

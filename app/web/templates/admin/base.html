@@ -1,0 +1,43 @@
+{% import "admin/_macros.html" as am with context %}
+{% set path = request.url.path %}
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block title %}Админка{% endblock %} — Истина</title>
+  <link rel="stylesheet" href="{{ static_url('css/admin.css') }}">
+</head>
+<body>
+  <header class="adm-header">
+    <div class="adm-wrap adm-header__inner">
+      <a class="adm-brand" href="/admin">Истина <span>админка</span></a>
+      <nav class="adm-nav" aria-label="Разделы админки">
+        <a href="/admin"{% if path == '/admin' %} aria-current="page"{% endif %}>Сводка</a>
+        <a href="/admin/moderation"{% if path.startswith('/admin/moderation') %} aria-current="page"{% endif %}>Модерация{% if nav.pending_profiles %} <span class="adm-count">{{ nav.pending_profiles }}</span>{% endif %}</a>
+        <a href="/admin/reports"{% if path.startswith('/admin/reports') %} aria-current="page"{% endif %}>Жалобы{% if nav.open_reports %} <span class="adm-count">{{ nav.open_reports }}</span>{% endif %}</a>
+        <a href="/admin/flagged"{% if path.startswith('/admin/flagged') %} aria-current="page"{% endif %}>Стоп-слова</a>
+        <a href="/admin/users"{% if path.startswith('/admin/users') %} aria-current="page"{% endif %}>Пользователи</a>
+      </nav>
+      <div class="adm-header__me">
+        <span class="adm-muted">{{ admin.display_name }} (#{{ admin.id }})</span>
+        <a href="/">На сайт</a>
+        <form method="post" action="/logout">{{ am.csrf() }}<button type="submit" class="adm-linkbtn">Выйти</button></form>
+      </div>
+    </div>
+  </header>
+  <main class="adm-wrap adm-main" id="main">
+    {% set flashes = pop_flashes() %}
+    {% if flashes %}
+    <div class="adm-flashes" role="status">
+      {% for item in flashes %}
+      <p class="adm-flash adm-flash--{{ item.level }}">{{ item.message }}</p>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

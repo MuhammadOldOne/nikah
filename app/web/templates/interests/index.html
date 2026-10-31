@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Отклики — Истина{% endblock %}
+{% block container_class %}container--narrow{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Отклики</h1>
+    <p class="muted">Переписка открывается, только когда отклик принят.</p>
+  </div>
+</div>
+<nav class="tabs" aria-label="Отклики">
+  <a href="/interests?tab=in"{% if tab == 'in' %} aria-current="page"{% endif %}>Входящие{% if incoming %} <span class="badge">{{ incoming|length }}</span>{% endif %}</a>
+  <a href="/interests?tab=out"{% if tab == 'out' %} aria-current="page"{% endif %}>Исходящие</a>
+</nav>
+
+{% if not own_profile %}
+<div class="card empty">
+  <div class="empty__icon">{{ m.icon('user') }}</div>
+  <h2>Сначала анкета</h2>
+  <p>Отклики появятся, когда вы создадите анкету и её опубликуют.</p>
+  <a class="btn btn-primary" href="/profile/new">Создать анкету</a>
+</div>
+{% elif tab == 'in' %}
+  {% if incoming %}
+  <ul class="list">{% for interest in incoming %}{% include "interests/_card.html" %}{% endfor %}</ul>
+  {% else %}
+  <div class="card empty">
+    <div class="empty__icon">{{ m.icon('mail') }}</div>
+    <h2>Новых откликов нет</h2>
+    <p>Когда кто-то откликнется на вашу анкету, он появится здесь, а бот пришлёт уведомление в Telegram.</p>
+    <a class="btn btn-secondary" href="/catalog">Смотреть анкеты</a>
+  </div>
+  {% endif %}
+{% else %}
+  {% if outgoing %}
+  <ul class="list">{% for interest in outgoing %}{% include "interests/_card.html" %}{% endfor %}</ul>
+  {% else %}
+  <div class="card empty">
+    <div class="empty__icon">{{ m.icon('heart') }}</div>
+    <h2>Вы ещё не откликались</h2>
+    <p>Откройте понравившуюся анкету и нажмите «Откликнуться» — можно добавить короткое сообщение.</p>
+    <a class="btn btn-primary" href="/catalog">Смотреть анкеты</a>
+  </div>
+  {% endif %}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,75 @@
+{% extends "admin/base.html" %}
+{% block title %}Сводка{% endblock %}
+{% block content %}
+<h1>Сводка</h1>
+
+<section class="adm-tiles" aria-label="Главное">
+  <a class="adm-tile{% if nav.pending_profiles %} adm-tile--attention{% endif %}" href="/admin/moderation">
+    <span class="adm-tile__value">{{ nav.pending_profiles }}</span>
+    <span class="adm-tile__label">анкет на модерации</span>
+  </a>
+  <a class="adm-tile{% if stats.open_reports %} adm-tile--attention{% endif %}" href="/admin/reports">
+    <span class="adm-tile__value">{{ stats.open_reports }}</span>
+    <span class="adm-tile__label">открытых жалоб</span>
+  </a>
+  <a class="adm-tile" href="/admin/flagged">
+    <span class="adm-tile__value">{{ stats.flagged_messages }}</span>
+    <span class="adm-tile__label">сообщений со стоп-словами</span>
+  </a>
+  <a class="adm-tile" href="/admin/users">
+    <span class="adm-tile__value">{{ stats.users_total }}</span>
+    <span class="adm-tile__label">пользователей{% if stats.users_banned %}, из них {{ stats.users_banned }} заблок.{% endif %}</span>
+  </a>
+  <div class="adm-tile">
+    <span class="adm-tile__value">{{ stats.open_conversations }}</span>
+    <span class="adm-tile__label">открытых чатов</span>
+  </div>
+  <div class="adm-tile">
+    <span class="adm-tile__value">{{ stats.messages_24h }}</span>
+    <span class="adm-tile__label">сообщений за 24 часа</span>
+  </div>
+</section>
+
+<div class="adm-grid">
+  <section class="adm-panel">
+    <h2>Анкеты</h2>
+    <table class="adm-table">
+      <thead>
+        <tr><th scope="col">Статус</th><th scope="col" class="num">Мужчины</th><th scope="col" class="num">Женщины</th><th scope="col" class="num">Всего</th></tr>
+      </thead>
+      <tbody>
+        {% for status, by_gender in stats.profiles.items() %}
+        <tr>
+          <th scope="row">{{ label(status) }}</th>
+          <td class="num">{{ by_gender[enums.Gender.MALE] }}</td>
+          <td class="num">{{ by_gender[enums.Gender.FEMALE] }}</td>
+          <td class="num">{{ stats.profiles_by_status(status) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <th scope="row">Всего</th>
+          <td class="num">{{ stats.profiles_by_gender(enums.Gender.MALE) }}</td>
+          <td class="num">{{ stats.profiles_by_gender(enums.Gender.FEMALE) }}</td>
+          <td class="num">{{ stats.profiles_total }}</td>
+        </tr>
+      </tfoot>
+    </table>
+  </section>
+
+  <section class="adm-panel">
+    <h2>Отклики</h2>
+    <table class="adm-table">
+      <tbody>
+        {% for status, count in stats.interests.items() %}
+        <tr><th scope="row">{{ label(status)|capitalize }}</th><td class="num">{{ count }}</td></tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr><th scope="row">Всего</th><td class="num">{{ stats.interests.values()|sum }}</td></tr>
+      </tfoot>
+    </table>
+  </section>
+</div>
+{% endblock %}

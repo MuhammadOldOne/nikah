@@ -1,0 +1,36 @@
+{% import "macros.html" as m with context %}
+<section id="results" class="results" aria-label="Результаты" aria-live="polite">
+  <div class="results-meta">
+    <span>Найдено: {{ total }} {{ plural(total, 'анкета', 'анкеты', 'анкет') }}</span>
+    {% if pages > 1 %}<span>стр. {{ page }} из {{ pages }}</span>{% endif %}
+  </div>
+  {% if filter_errors %}
+  <div class="flashes">{% call m.alert('warning', 'Часть фильтров не применена') %}<p>{{ filter_errors.values()|join(' ') }}</p>{% endcall %}</div>
+  {% endif %}
+  {% if items %}
+  <div class="cards cards--3">
+    {% for profile in items %}{{ m.profile_card(profile, wali_ids) }}{% endfor %}
+  </div>
+  {% if pages > 1 %}
+  <nav class="pagination" aria-label="Страницы">
+    {% for number in page_numbers %}
+      {% if number is none %}<span class="gap" aria-hidden="true">…</span>
+      {% elif number == page %}<span aria-current="page">{{ number }}</span>
+      {% else %}{% set url = '/catalog?' ~ (query_base ~ '&' if query_base else '') ~ 'page=' ~ number %}<a href="{{ url }}" hx-get="{{ url }}" hx-target="#results" hx-swap="outerHTML show:window:top" hx-push-url="true" aria-label="Страница {{ number }}">{{ number }}</a>{% endif %}
+    {% endfor %}
+  </nav>
+  {% endif %}
+  {% else %}
+  <div class="card empty">
+    <div class="empty__icon">{{ m.icon('users') }}</div>
+    {% if filters %}
+    <h2>По этим фильтрам никого нет</h2>
+    <p>Попробуйте расширить возраст или убрать город — новые анкеты появляются каждый день.</p>
+    <a class="btn btn-secondary" href="/catalog">Сбросить фильтры</a>
+    {% else %}
+    <h2>Пока здесь пусто</h2>
+    <p>Опубликованных анкет пока нет. Новые появляются каждый день — загляните позже или расскажите о «Истине» знакомым.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>

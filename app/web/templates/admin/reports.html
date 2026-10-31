@@ -1,0 +1,68 @@
+{% extends "admin/base.html" %}
+{% block title %}Жалобы{% endblock %}
+{% block content %}
+<h1>Жалобы</h1>
+<nav class="adm-tabs" aria-label="Статус жалоб">
+  <a href="/admin/reports?status=open"{% if status == enums.ReportStatus.OPEN %} aria-current="page"{% endif %}>Открытые</a>
+  <a href="/admin/reports?status=resolved"{% if status == enums.ReportStatus.RESOLVED %} aria-current="page"{% endif %}>Рассмотренные</a>
+</nav>
+{% if status == enums.ReportStatus.OPEN %}
+<p class="adm-hint">Сначала самые давние. Любая жалоба (даже отклонённая) навсегда скрывает этих двоих друг от друга в каталоге.</p>
+{% endif %}
+
+{% for report in reports %}
+{% set target = report.target_user %}
+<article class="adm-card" id="r{{ report.id }}">
+  <header class="adm-card__head">
+    <h2>Жалоба #{{ report.id }}: {{ label(report.reason) }}</h2>
+    <p class="adm-meta">{{ report.created_at|msk }} · от {{ am.person(report.reporter) }}</p>
+  </header>
+
+  <dl class="adm-fields">
+    <div class="adm-field">
+      <dt>На кого</dt>
+      <dd>{{ am.person(target) }}
+        {% if target.profile %}<br>{{ am.profile_summary(target.profile) }}{% else %}<br><span class="adm-muted">анкеты нет</span>{% endif %}
+      </dd>
+    </div>
+    {% if report.comment %}
+    <div class="adm-field adm-field--wide"><dt>Комментарий</dt><dd class="adm-text">{{ report.comment }}</dd></div>
+    {% endif %}
+    <div class="adm-field adm-field--wide">
+      <dt>{% if report.message %}Сообщение ({{ report.message.created_at|msk }}){% else %}Предмет жалобы{% endif %}</dt>
+      <dd>
+        {% if report.message %}
+        <blockquote class="adm-quote adm-text">{{ highlight(excerpt(report.message.text)) }}</blockquote>
+        {% else %}<span class="adm-muted">анкета или поведение в целом (без конкретного сообщения)</span>{% endif %}
+      </dd>
+    </div>
+  </dl>
+
+  {% if report.status == enums.ReportStatus.OPEN %}
+  <form method="post" action="/admin/reports/{{ report.id }}/resolve" class="adm-actions">
+    {{ am.csrf() }}{{ am.back() }}
+    <button type="submit" name="action" value="{{ actions.DISMISS.value }}" class="adm-btn">Отклонить жалобу</button>
+    {% if target.profile and target.profile.status != enums.ProfileStatus.REJECTED %}
+    <button type="submit" name="action" value="{{ actions.HIDE_PROFILE.value }}" class="adm-btn adm-btn--warn">Скрыть анкету</button>
+    {% endif %}
+  </form>
+  {% if not is_admin(target) %}
+  <details class="adm-confirm">
+    <summary class="adm-btn adm-btn--danger">Заблокировать…</summary>
+    <form method="post" action="/admin/reports/{{ report.id }}/resolve">
+      {{ am.csrf() }}{{ am.back() }}
+      <p>Анкета исчезнет из каталога, отклики будут отменены, чаты закрыты, вали отключён. Все открытые жалобы на этого пользователя закроются.</p>
+      <button type="submit" name="action" value="{{ actions.BAN_USER.value }}" class="adm-btn adm-btn--danger">Да, заблокировать</button>
+    </form>
+  </details>
+  {% endif %}
+  {% else %}
+  <p class="adm-meta">Решение: <b>{{ label(report.resolution) }}</b> · {{ report.resolved_at|msk }}{% if report.resolved_by_id %} · модератор #{{ report.resolved_by_id }}{% endif %}</p>
+  {% endif %}
+</article>
+{% else %}
+<p class="adm-empty">{% if status == enums.ReportStatus.OPEN %}Открытых жалоб нет.{% else %}Рассмотренных жалоб пока нет.{% endif %}</p>
+{% endfor %}
+
+{{ am.pager(pager) }}
+{% endblock %}

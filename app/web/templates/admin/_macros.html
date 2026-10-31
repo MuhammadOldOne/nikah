@@ -1,0 +1,54 @@
+{# Shared pieces of the admin pages. Import with context: am.csrf() needs the request. #}
+
+{% macro csrf() %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endmacro %}
+
+{# Return to the current page (path + query) after a POST action. #}
+{% macro back() %}<input type="hidden" name="next" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">{% endmacro %}
+
+{% macro person(user) %}
+{%- if user is none -%}
+<span class="adm-muted">аккаунт удалён</span>
+{%- else -%}
+<a href="/admin/users/{{ user.id }}">{{ user.profile.name if user.profile else user.display_name }} (#{{ user.id }})</a>
+{%- if user.is_banned %} <span class="adm-tag adm-tag--danger">заблокирован</span>{% endif -%}
+{%- endif -%}
+{% endmacro %}
+
+{% macro profile_status(profile) %}
+<span class="adm-tag adm-tag--{{ profile.status.value }}">{{ label(profile.status) }}</span>
+{% endmacro %}
+
+{% macro flags(reason) %}
+{% if reason %}
+<p class="adm-flags"><span class="adm-tag adm-tag--warn">стоп-слова</span>
+  {% for word in reason.split(', ') %}<mark>{{ word }}</mark>{% if not loop.last %} {% endif %}{% endfor %}
+</p>
+{% endif %}
+{% endmacro %}
+
+{# Compact line: gender, age, city, status. #}
+{% macro profile_summary(profile) %}
+{% set age = profile.birth_year|age %}
+{{ label(profile.gender) }}, {{ age }} {{ plural(age, 'год', 'года', 'лет') }}, {{ profile.city }} · {{ profile_status(profile) }}
+{% endmacro %}
+
+{% macro profile_card(profile) %}
+<dl class="adm-fields">
+  {% for row in profile_rows(profile) %}
+  <div class="adm-field{% if row.wide %} adm-field--wide{% endif %}">
+    <dt>{{ row.label }}</dt>
+    <dd{% if row.wide %} class="adm-text"{% endif %}>{{ row.value }}</dd>
+  </div>
+  {% endfor %}
+</dl>
+{% endmacro %}
+
+{% macro pager(p) %}
+{% if p.pages > 1 %}
+<nav class="adm-pager" aria-label="Страницы">
+  {% if p.page > 1 %}<a href="{{ p.url(p.page - 1) }}" rel="prev">← Назад</a>{% endif %}
+  <span>Страница {{ p.page }} из {{ p.pages }}</span>
+  {% if p.page < p.pages %}<a href="{{ p.url(p.page + 1) }}" rel="next">Дальше →</a>{% endif %}
+</nav>
+{% endif %}
+{% endmacro %}

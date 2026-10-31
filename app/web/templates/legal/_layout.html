@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}{{ page_title }} — Истина{% endblock %}
+{% block robots %}index, follow{% endblock %}
+{% block content %}
+<article class="prose">
+  <h1>{{ page_title }}</h1>
+  <div class="legal-note">
+    {% call m.alert('warning', 'Шаблон — требует проверки юристом перед запуском') %}<p>Текст подготовлен как основа. Поля в квадратных скобках заполняет оператор; положения нужно сверить с актуальной редакцией законодательства.</p>{% endcall %}
+  </div>
+  <p class="muted">Редакция от [дата публикации]. Оператор: <span class="placeholder">[ФИО / ИНН / адрес оператора]</span>, e-mail: <span class="placeholder">[e-mail оператора]</span>.</p>
+  {% block legal %}{% endblock %}
+  <hr class="sep">
+  <p class="small muted">Другие документы: <a href="/privacy">Политика конфиденциальности</a> · <a href="/consent">Согласие на обработку данных</a> · <a href="/terms">Пользовательское соглашение</a> · <a href="/rules">Правила сообщества</a></p>
+</article>
+{% endblock %}

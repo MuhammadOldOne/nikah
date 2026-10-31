@@ -1,0 +1,93 @@
+# Production stack: PostgreSQL 16 + website + Telegram bot + Caddy (automatic HTTPS).
+# Setup: cp .env.example .env, fill it in, then: docker compose up -d --build  (docs/DEPLOY.md)
+name: nikah
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+# Shared by web and bot: same image, same settings.
+x-app: &app
+  build: .
+  image: nikah-istina:latest
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    # Built here so that the database password and the domain live in one place (.env).
+    DATABASE_URL: postgresql+asyncpg://nikah:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/nikah
+    SITE_URL: https://${DOMAIN:?set DOMAIN in .env}
+  logging: *logging
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nikah
+      POSTGRES_USER: nikah
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nikah -d nikah"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    # No "ports": the database is reachable only from the services of this stack.
+    logging: *logging
+
+  web:
+    <<: *app
+    # Applies migrations, then serves the site (the image's default command). Open live-chat
+    # streams would otherwise hold up a restart: they are cut after 5 s and browsers reconnect.
+    command: >-
+      sh -c "alembic upgrade head && exec uvicorn app.web.main:app --host 0.0.0.0 --port 8000
+      --proxy-headers --forwarded-allow-ips='*' --workers 2 --timeout-graceful-shutdown 5"
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  bot:
+    <<: *app
+    # Exactly ONE replica, never scale it: Telegram delivers updates of a bot token to a single
+    # long-polling client (a second poller gets "409 Conflict" and updates are split or lost).
+    # The same applies to the old bot process: stop it before starting this one (docs/DEPLOY.md).
+    command: ["python", "-m", "app.bot"]
+    depends_on:
+      db:
+        condition: service_healthy
+      web:
+        condition: service_healthy # web applies the migrations first
+    stop_grace_period: 30s
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+    logging: *logging
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

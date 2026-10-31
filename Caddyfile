@@ -1,0 +1,26 @@
+# HTTPS reverse proxy for the website. Caddy obtains and renews the Let's Encrypt certificate for
+# {$DOMAIN} automatically (ports 80 and 443 must be open and the DNS A record must point here).
+{$DOMAIN} {
+	# Compress pages and assets, but never Server-Sent Events: compression would buffer the stream.
+	encode zstd gzip {
+		match {
+			header Content-Type text/html*
+			header Content-Type text/css*
+			header Content-Type text/plain*
+			header Content-Type text/javascript*
+			header Content-Type application/javascript*
+			header Content-Type application/json*
+			header Content-Type image/svg+xml*
+		}
+	}
+
+	# The site only accepts small forms.
+	request_body {
+		max_size 1MB
+	}
+
+	reverse_proxy web:8000 {
+		# Send every chunk to the browser immediately: live chat (SSE) must not be buffered.
+		flush_interval -1
+	}
+}

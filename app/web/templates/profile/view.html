@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}{{ profile.name }} — анкета — Истина{% endblock %}
+{% block content %}
+{% set g = profile.gender %}
+{% set interest = relation.interest if relation else none %}
+{% set conversation = relation.conversation if relation else none %}
+<a class="back-link" href="/catalog">{{ m.icon('arrow-left', 'icon--sm') }} К анкетам</a>
+<div class="profile-layout">
+  <article class="card card-pad" aria-labelledby="profile-name">
+    <div class="profile-head">
+      {{ m.avatar(g, 'lg') }}
+      <div>
+        <h1 id="profile-name">{{ profile.name }}, {{ profile.birth_year|age }}&nbsp;{{ plural(profile.birth_year|age, 'год', 'года', 'лет') }}</h1>
+        <div class="muted">{{ gendered(g, 'Брат', 'Сестра') }} · {{ profile.city }} · #{{ profile.user_id }}</div>
+        <div class="pills">
+          {% if has_guardian %}{{ m.wali_badge() }}{% endif %}
+          {% if is_own %}<span class="pill">{{ label(profile.status) }}</span>{% endif %}
+        </div>
+      </div>
+    </div>
+    <hr class="sep">
+    {% include "profile/_details.html" %}
+  </article>
+
+  <aside class="action-panel">
+    {% if is_own %}
+    <section class="card card-pad">
+      <h2>Это ваша анкета</h2>
+      <p class="muted">Так её видят {{ gendered(g, 'сёстры', 'братья') }}{% if profile.status.value != 'active' %}, когда она опубликована{% endif %}.</p>
+      <a class="btn btn-primary btn-block" href="/me/edit">{{ m.icon('edit') }} Редактировать</a>
+    </section>
+    {% else %}
+    <section class="card card-pad" aria-labelledby="action-title">
+      {% if conversation %}
+        <h2 id="action-title">Переписка</h2>
+        {% if conversation.closed_at %}
+        <p class="muted">Общение с {{ gendered(g, 'этим братом', 'этой сестрой') }} завершено.</p>
+        <a class="btn btn-secondary btn-block" href="/chats/{{ conversation.id }}">Открыть историю</a>
+        {% else %}
+        <p class="muted">Отклик принят — вы можете переписываться.</p>
+        <a class="btn btn-primary btn-block" href="/chats/{{ conversation.id }}">{{ m.icon('chat') }} Перейти в чат</a>
+        {% endif %}
+      {% elif interest and interest.status.value == 'pending' and interest.from_user_id == user.id %}
+        <h2 id="action-title">Отклик отправлен</h2>
+        <p class="muted">Вы откликнулись {{ interest.created_at|msk_date }}. Ждём ответа — мы сообщим в Telegram.</p>
+        <form method="post" action="/interests/{{ interest.id }}/cancel">{{ m.csrf_field() }}<input type="hidden" name="back" value="/u/{{ profile.user_id }}"><button class="btn btn-ghost btn-block" type="submit">Отозвать отклик</button></form>
+      {% elif interest and interest.status.value == 'pending' %}
+        <h2 id="action-title">{{ gendered(g, 'Он откликнулся', 'Она откликнулась') }} на вашу анкету</h2>
+        <p class="muted">Примите отклик, чтобы начать переписку, или деликатно отклоните его.</p>
+        <a class="btn btn-primary btn-block" href="/interests">{{ m.icon('mail') }} Ответить на отклик</a>
+      {% elif interest and interest.status.value == 'declined' and interest.from_user_id == user.id %}
+        <h2 id="action-title">Отклик отклонён</h2>
+        <p class="muted mb-0">К сожалению, {{ gendered(g, 'брат', 'сестра') }} не {{ gendered(g, 'готов', 'готова') }} к общению. Повторный отклик отправить нельзя.</p>
+      {% elif own_profile.status.value != 'active' %}
+        <h2 id="action-title">Откликнуться</h2>
+        {% if own_profile.status.value == 'pending' %}
+        <p class="muted mb-0">Откликаться можно после того, как модератор опубликует вашу анкету.</p>
+        {% elif own_profile.status.value == 'hidden' %}
+        <p class="muted">Ваша анкета скрыта. Покажите её, чтобы откликаться.</p>
+        <a class="btn btn-secondary btn-block" href="/me">Моя анкета</a>
+        {% else %}
+        <p class="muted">Ваша анкета отклонена модератором. Исправьте её, чтобы откликаться.</p>
+        <a class="btn btn-secondary btn-block" href="/me/edit">Исправить анкету</a>
+        {% endif %}
+      {% else %}
+        <h2 id="action-title">Откликнуться</h2>
+        <form class="stack" method="post" action="/u/{{ profile.user_id }}/interest">
+          {{ m.csrf_field() }}
+          <div class="field">
+            <label for="interest-message">Сообщение <span class="muted">(необязательно)</span></label>
+            <textarea class="textarea" id="interest-message" name="message" rows="4" maxlength="{{ message_max }}" data-counter="{{ message_max }}" placeholder="Ассаляму алейкум! Коротко о себе и почему откликаетесь…" aria-describedby="interest-hint"></textarea>
+            <p class="hint" id="interest-hint">Без контактов: обменяться ими можно в чате, когда отклик примут.</p>
+          </div>
+          <button class="btn btn-primary btn-block btn-lg" type="submit">{{ m.icon('heart') }} Откликнуться</button>
+        </form>
+      {% endif %}
+    </section>
+
+    <details class="card card-pad report-box">
+      <summary>{{ m.icon('flag', 'icon--sm') }} Пожаловаться</summary>
+      <form method="post" action="/u/{{ profile.user_id }}/report">
+        {{ m.csrf_field() }}
+        <div class="field">
+          <label for="report-reason">Причина</label>
+          <select class="select" id="report-reason" name="reason" required>
+            <option value="">Выберите причину</option>
+            {% for value, text in choices(enums.ReportReason) %}<option value="{{ value }}">{{ text }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="report-comment">Комментарий <span class="muted">(необязательно)</span></label>
+          <textarea class="textarea" id="report-comment" name="comment" rows="3" maxlength="{{ comment_max }}" data-counter="{{ comment_max }}"></textarea>
+        </div>
+        <p class="hint mb-0">Жалобу увидит только модератор. После неё вы перестанете видеть друг друга в каталоге.</p>
+        <button class="btn btn-danger-outline" type="submit">Отправить жалобу</button>
+      </form>
+    </details>
+    {% endif %}
+  </aside>
+</div>
+{% endblock %}

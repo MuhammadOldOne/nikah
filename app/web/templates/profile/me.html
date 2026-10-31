@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Моя анкета — Истина{% endblock %}
+{% block content %}
+{% set g = profile.gender %}
+<div class="page-head">
+  <div>
+    <h1>Моя анкета</h1>
+    <p class="muted">#{{ profile.user_id }} · обновлена {{ profile.updated_at|msk_date }}</p>
+  </div>
+  <div class="row">
+    <a class="btn btn-primary" href="/me/edit">{{ m.icon('edit') }} Редактировать</a>
+    <a class="btn btn-secondary" href="/u/{{ profile.user_id }}">{{ m.icon('eye') }} Как видят другие</a>
+  </div>
+</div>
+
+<div class="stack">
+  {% if profile.status.value == 'pending' %}
+  {% call m.alert('warning', 'На модерации') %}<p>Анкету проверяет модератор — обычно это занимает до суток. Смотреть анкеты можно уже сейчас, откликаться — после публикации.</p>{% endcall %}
+  {% elif profile.status.value == 'active' %}
+  {% call m.alert('success', 'Опубликована') %}<p>Анкету видят {{ gendered(g, 'сёстры', 'братья') }} в каталоге и в боте.</p>{% endcall %}
+  {% elif profile.status.value == 'hidden' %}
+  {% call m.alert('info', 'Скрыта') %}<p>Анкету не видно в каталоге. Начатые переписки продолжаются.</p>{% endcall %}
+  {% else %}
+  {% call m.alert('error', 'Отклонена модератором') %}
+  {% if profile.moderation_note %}<p><b>Причина:</b> {{ profile.moderation_note }}</p>{% endif %}
+  <p>Исправьте анкету — после сохранения она снова уйдёт на проверку.</p>
+  {% endcall %}
+  {% endif %}
+
+  <div class="profile-layout">
+    <article class="card card-pad">
+      <div class="profile-head">
+        {{ m.avatar(g, 'lg') }}
+        <div>
+          <h2 class="mb-0">{{ profile.name }}</h2>
+          <div class="muted">{{ gendered(g, 'Брат', 'Сестра') }} · {{ profile.city }}</div>
+          <div class="pills">
+            <span class="pill {{ {'active': 'pill--success', 'pending': 'pill--warning', 'rejected': 'pill--danger'}.get(profile.status.value, '') }}">{{ label(profile.status) }}</span>
+            {% if has_guardian %}{{ m.wali_badge(short=true) }}{% endif %}
+          </div>
+        </div>
+      </div>
+      <hr class="sep">
+      {% include "profile/_details.html" %}
+    </article>
+
+    <aside class="stack">
+      <section class="card card-pad" aria-labelledby="visibility-title">
+        <h2 id="visibility-title">Видимость</h2>
+        {% if profile.status.value in ('active', 'pending') %}
+        <p class="muted">Можно временно скрыть анкету из каталога — например, пока идёт общение с кем-то.</p>
+        <form method="post" action="/me/hide">{{ m.csrf_field() }}<button class="btn btn-secondary btn-block" type="submit">{{ m.icon('eye-off') }} Скрыть анкету</button></form>
+        {% elif profile.status.value == 'hidden' %}
+        <p class="muted">Анкета скрыта. Покажите её, чтобы снова появиться в каталоге{% if not profile.approved_at and settings.PREMODERATION %} (после проверки модератором){% endif %}.</p>
+        <form method="post" action="/me/show">{{ m.csrf_field() }}<button class="btn btn-primary btn-block" type="submit">{{ m.icon('eye') }} Показать анкету</button></form>
+        {% else %}
+        <p class="muted mb-0">Отклонённая анкета не видна в каталоге. Отредактируйте её, чтобы отправить на повторную проверку.</p>
+        {% endif %}
+      </section>
+      <section class="card card-pad" aria-labelledby="wali-title">
+        <h2 id="wali-title">Вали</h2>
+        <p class="muted">{% if has_guardian %}Вали подключён и получает копии переписки.{% else %}Подключите вали — он будет получать копии вашей переписки в Telegram.{% endif %}</p>
+        <a class="btn btn-secondary btn-block" href="/settings#wali">{{ m.icon('settings') }} Настройки вали</a>
+      </section>
+      <form method="post" action="/logout">{{ m.csrf_field() }}<button class="btn btn-ghost btn-block" type="submit">{{ m.icon('logout') }} Выйти</button></form>
+    </aside>
+  </div>
+
+  {% with back = "/me" %}{% include "partials/delete_account.html" %}{% endwith %}
+</div>
+{% endblock %}

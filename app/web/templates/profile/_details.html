@@ -1,0 +1,39 @@
+{# Readable groups of the filled-in profile fields. Context: profile. #}
+{% set g = profile.gender %}
+{% set years = profile.birth_year|age %}
+<div class="stack-lg">
+  <section class="profile-section" aria-labelledby="about-main">
+    <h2 id="about-main">Основное</h2>
+    <dl class="facts">
+      <div><dt>Возраст</dt><dd>{{ years }} {{ plural(years, 'год', 'года', 'лет') }} <span class="muted">({{ profile.birth_year }} г.&nbsp;р.)</span></dd></div>
+      <div><dt>Город</dt><dd>{{ profile.city }}</dd></div>
+      {% if profile.nationality %}<div><dt>Национальность</dt><dd>{{ profile.nationality }}</dd></div>{% endif %}
+      {% if profile.height %}<div><dt>Рост</dt><dd>{{ profile.height }} см</dd></div>{% endif %}
+      {% if profile.weight %}<div><dt>Вес</dt><dd>{{ profile.weight }} кг</dd></div>{% endif %}
+    </dl>
+  </section>
+  <section class="profile-section" aria-labelledby="about-life">
+    <h2 id="about-life">Семья и жизнь</h2>
+    <dl class="facts">
+      <div><dt>Семейное положение</dt><dd>{{ label(profile.marital_status, g) }}</dd></div>
+      <div><dt>Дети</dt><dd>{% if profile.children %}{{ profile.children }}{% else %}нет{% endif %}</dd></div>
+      <div><dt>Образование</dt><dd>{{ label(profile.education) }}</dd></div>
+      <div><dt>Занятость</dt><dd>{{ label(profile.employment) }}</dd></div>
+      {% if profile.occupation %}<div><dt>Род занятий</dt><dd>{{ profile.occupation }}</dd></div>{% endif %}
+      {% if profile.madhab %}<div><dt>Мазхаб</dt><dd>{{ label(profile.madhab) }}</dd></div>{% endif %}
+      {% if profile.prayer %}<div><dt>Намаз</dt><dd>{{ label(profile.prayer) }}</dd></div>{% endif %}
+      {% if profile.nikah_timeline %}<div><dt>{{ gendered(g, 'Готов к никаху', 'Готова к никаху') }}</dt><dd>{{ label(profile.nikah_timeline) }}</dd></div>{% endif %}
+      {% if profile.relocation %}<div><dt>Переезд</dt><dd>{{ label(profile.relocation, g) }}</dd></div>{% endif %}
+    </dl>
+  </section>
+  <section class="profile-section" aria-labelledby="about-wishes">
+    <h2 id="about-wishes">Пожелания к {{ gendered(g, 'супруге', 'супругу') }}</h2>
+    <p class="prose-text">{{ profile.wishes }}</p>
+  </section>
+  {% if profile.about %}
+  <section class="profile-section" aria-labelledby="about-self">
+    <h2 id="about-self">О себе</h2>
+    <p class="prose-text">{{ profile.about }}</p>
+  </section>
+  {% endif %}
+</div>

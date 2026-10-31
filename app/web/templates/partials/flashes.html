@@ -1,0 +1,9 @@
+{% import "macros.html" as m with context %}
+{% set flashes = pop_flashes() %}
+{% if flashes %}
+<div class="flashes">
+  {% for item in flashes %}
+  {% call m.alert(item.level) %}<p>{{ item.message }}</p>{% endcall %}
+  {% endfor %}
+</div>
+{% endif %}

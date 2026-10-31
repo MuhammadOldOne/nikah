@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+  <title>Безликий силуэт сестры в хиджабе</title>
+  <rect width="120" height="120" fill="#f2e6cf"/>
+  <path d="M14 120 C16 96 34 83 60 83 C86 83 104 96 106 120 Z" fill="#7a5730"/>
+  <path d="M60 19 C41.5 19 32.5 33.5 32.5 50 C32.5 63 36.5 73 30.5 89 C41.5 97 51.5 100 60 100 C68.5 100 78.5 97 89.5 89 C83.5 73 87.5 63 87.5 50 C87.5 33.5 78.5 19 60 19 Z" fill="#94703f"/>
+  <ellipse cx="60" cy="52" rx="15" ry="18.5" fill="#f8eedd"/>
+  <path d="M60 19 C41.5 19 32.5 33.5 32.5 50 C32.5 63 36.5 73 30.5 89 C41.5 97 51.5 100 60 100 C68.5 100 78.5 97 89.5 89 C83.5 73 87.5 63 87.5 50 C87.5 33.5 78.5 19 60 19 Z" fill="none" stroke="#6e4f2a" stroke-width="2"/>
+  <path d="M44.5 67 C50 76 70 76 75.5 67" fill="none" stroke="#7d5a31" stroke-width="2" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,109 @@
+{# Profile form sections shared by the wizard (/profile/new) and the edit page (/me/edit).
+   Context: values (str), errors, gender (fixed on edit, chosen on step 1 of the wizard), years, cities, glabels. #}
+{% import "macros.html" as m with context %}
+
+{% macro text_input(name, label_text, required=false, hint=none, maxlength=none, attrs="", type="text") -%}
+<div class="field{% if errors.get(name) %} is-invalid{% endif %}">
+  <label for="f-{{ name }}">{{ label_text }}{% if required %} <span class="req" aria-hidden="true">*</span>{% endif %}</label>
+  <input class="input" id="f-{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ values.get(name, '') }}"{% if required %} required{% endif %}{% if maxlength %} maxlength="{{ maxlength }}"{% endif %} {{ attrs|safe }}{{ m.describedby(errors, name, hint) }}>
+  {% if hint %}<p class="hint" id="{{ name }}-hint">{{ hint }}</p>{% endif %}
+  {{ m.field_error(errors, name) }}
+</div>
+{%- endmacro %}
+
+{% macro textarea(name, label_text, required=false, hint=none, maxlength=1000, minlength=none, placeholder="", rows=4) -%}
+<div class="field{% if errors.get(name) %} is-invalid{% endif %}">
+  <label for="f-{{ name }}">{{ label_text }}{% if required %} <span class="req" aria-hidden="true">*</span>{% endif %}</label>
+  <textarea class="textarea" id="f-{{ name }}" name="{{ name }}" rows="{{ rows }}" maxlength="{{ maxlength }}"{% if minlength %} minlength="{{ minlength }}"{% endif %}{% if required %} required{% endif %} placeholder="{{ placeholder }}" data-counter="{{ maxlength }}"{{ m.describedby(errors, name, hint) }}>{{ values.get(name, '') }}</textarea>
+  {% if hint %}<p class="hint" id="{{ name }}-hint">{{ hint }}</p>{% endif %}
+  {{ m.field_error(errors, name) }}
+</div>
+{%- endmacro %}
+
+{% macro optional_chips(name, label_text, enum_cls, with_none=true) -%}
+{% set opts = ([('', 'не указывать')] if with_none else []) + choices(enum_cls, gender) %}
+{{ m.chips(name, label_text, opts, values.get(name, ''), errors, gendered_labels=glabels.get(name)) }}
+{%- endmacro %}
+
+{% macro gtext(male, female, neutral) -%}
+<span data-male="{{ male }}" data-female="{{ female }}" data-neutral="{{ neutral }}">{{ gendered(gender, male, female, neutral) }}</span>
+{%- endmacro %}
+
+{# Collapsed block of optional fields; open when one of ``fields`` has a value or an error. #}
+{% macro more(fields, title="Дополнительно (необязательно)") -%}
+{% set ns = namespace(open=false) %}
+{% for f in fields %}{% if values.get(f) or errors.get(f) %}{% set ns.open = true %}{% endif %}{% endfor %}
+<details class="more"{% if ns.open %} open{% endif %}>
+  <summary>{{ title }} {{ m.icon('chevron-down') }}</summary>
+  <div class="more__body">{{ caller() }}</div>
+</details>
+{%- endmacro %}
+
+{# Step 1: «Основное» #}
+{% macro section_basic(mode) -%}
+{% if mode == "create" %}
+<fieldset class="field{% if errors.get('gender') %} is-invalid{% endif %}" id="field-gender">
+  <legend>Я <span class="req" aria-hidden="true">*</span></legend>
+  <div class="chips chips--big">
+    <label class="chip"><input type="radio" name="gender" value="male" required{% if values.get('gender') == 'male' %} checked{% endif %} data-gender-switch{% if errors.get('gender') %} aria-invalid="true" aria-describedby="gender-error"{% endif %}><span><img src="{{ static_url('img/avatar-male.svg') }}" alt="" width="32" height="32">Брат</span></label>
+    <label class="chip"><input type="radio" name="gender" value="female"{% if values.get('gender') == 'female' %} checked{% endif %} data-gender-switch><span><img src="{{ static_url('img/avatar-female.svg') }}" alt="" width="32" height="32">Сестра</span></label>
+  </div>
+  <p class="hint">Анкеты увидят только люди противоположного пола. Пол нельзя изменить после создания анкеты.</p>
+  {{ m.field_error(errors, 'gender') }}
+</fieldset>
+{% endif %}
+{{ text_input('name', 'Имя или псевдоним', required=true, hint='Можно не указывать настоящее имя. Фамилия не нужна.', maxlength=40, attrs='autocomplete="off" minlength="2"') }}
+<div class="form-grid form-grid--2">
+  <div class="field{% if errors.get('birth_year') %} is-invalid{% endif %}">
+    <label for="f-birth_year">Год рождения <span class="req" aria-hidden="true">*</span></label>
+    <select class="select" id="f-birth_year" name="birth_year" required{{ m.describedby(errors, 'birth_year') }}>
+      <option value="">Выберите год</option>
+      {% for year in years %}<option value="{{ year }}"{% if values.get('birth_year') == year|string %} selected{% endif %}>{{ year }}</option>{% endfor %}
+    </select>
+    {{ m.field_error(errors, 'birth_year') }}
+  </div>
+  <div class="field{% if errors.get('city') %} is-invalid{% endif %}">
+    <label for="f-city">Город <span class="req" aria-hidden="true">*</span></label>
+    <input class="input" id="f-city" name="city" type="text" value="{{ values.get('city', '') }}" required maxlength="60" list="city-list" autocomplete="address-level2"{{ m.describedby(errors, 'city') }}>
+    <datalist id="city-list">{% for city in cities %}<option value="{{ city }}">{% endfor %}</datalist>
+    {{ m.field_error(errors, 'city') }}
+  </div>
+</div>
+{% call more(['nationality', 'height', 'weight']) %}
+{{ text_input('nationality', 'Национальность', maxlength=50, attrs='autocomplete="off"') }}
+<div class="form-grid form-grid--2">
+  {{ text_input('height', 'Рост, см', type='number', attrs='inputmode="numeric" min="140" max="220"') }}
+  {{ text_input('weight', 'Вес, кг', type='number', attrs='inputmode="numeric" min="35" max="200"') }}
+</div>
+{% endcall %}
+{%- endmacro %}
+
+{# Step 2: «Семья и жизнь» #}
+{% macro section_life() -%}
+{{ m.chips('marital_status', 'Семейное положение', choices(enums.MaritalStatus, gender), values.get('marital_status'), errors, required=true, gendered_labels=glabels.get('marital_status')) }}
+<div class="field{% if errors.get('children') %} is-invalid{% endif %}">
+  <label for="f-children">Количество детей <span class="req" aria-hidden="true">*</span></label>
+  <input class="input" id="f-children" name="children" type="number" inputmode="numeric" min="0" max="15" value="{{ values.get('children', '') }}" required{{ m.describedby(errors, 'children') }}>
+  {{ m.field_error(errors, 'children') }}
+</div>
+{{ m.chips('education', 'Образование', choices(enums.Education), values.get('education'), errors, required=true) }}
+{{ m.chips('employment', 'Занятость', choices(enums.Employment), values.get('employment'), errors, required=true) }}
+{% call more(['occupation', 'madhab', 'prayer']) %}
+{{ text_input('occupation', 'Род занятий', hint='Например: инженер, учитель, студент-медик.', maxlength=100, attrs='autocomplete="off"') }}
+{{ optional_chips('madhab', 'Мазхаб', enums.Madhab, with_none=false) }}
+{{ optional_chips('prayer', 'Намаз', enums.Prayer) }}
+{% endcall %}
+{%- endmacro %}
+
+{# Step 3: «Пожелания» #}
+{% macro section_wishes() -%}
+{% set placeholder = gendered(gender, 'Какой вы видите будущую супругу', 'Каким вы видите будущего супруга', 'Каким вы видите будущего супруга (супругу)') ~ ': возраст, религиозность, характер, отношение к семье…' %}
+{{ textarea('wishes', 'Пожелания к ' ~ gtext('супруге', 'супругу', 'супругу (супруге)'), required=true,
+    hint='От 10 до 1000 символов. Без телефонов, ссылок и @юзернеймов — контактами обмениваются в чате после согласия.',
+    maxlength=1000, minlength=10, placeholder=placeholder) }}
+{% call more(['nikah_timeline', 'relocation', 'about']) %}
+{{ optional_chips('nikah_timeline', gtext('Когда готов к никаху', 'Когда готова к никаху', 'Когда готов(а) к никаху'), enums.NikahTimeline) }}
+{{ optional_chips('relocation', 'Готовность к переезду', enums.Relocation) }}
+{{ textarea('about', 'О себе', maxlength=2000, placeholder='Чем занимаетесь, что для вас важно в семье и религии…', rows=5) }}
+{% endcall %}
+{%- endmacro %}

@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Чат{% if partner_profile %} с {{ partner_profile.name }}{% endif %} — Истина{% endblock %}
+{% block head %}<script src="{{ static_url('js/chat.js') }}" defer></script>{% endblock %}
+{% block stream_url %}/chats/{{ conversation.id }}/stream{% endblock %}
+{% block page_class %}page--chat{% endblock %}
+{% block flashes %}{% endblock %}
+{% block footer %}{% endblock %}
+{% block content %}
+{% set is_open = conversation.closed_at is none and partner is not none %}
+<section class="chat" id="chat" aria-label="Переписка"
+  data-messages-url="/chats/{{ conversation.id }}/messages"
+  data-last-id="{{ messages[-1].id if messages else 0 }}"
+  data-open="{{ '1' if is_open else '0' }}">
+  <header class="chat__header">
+    <a class="back" href="/chats" aria-label="Все чаты">{{ m.icon('arrow-left') }}</a>
+    {{ m.avatar(partner_profile.gender if partner_profile else 'male', 'sm') }}
+    <div class="chat__who">
+      {% if partner %}
+      {% if partner_profile %}<a href="/u/{{ partner.id }}">{{ partner_profile.name }}</a>
+      <span class="muted">{{ partner_profile.birth_year|age }} {{ plural(partner_profile.birth_year|age, 'год', 'года', 'лет') }} · {{ partner_profile.city }}</span>
+      {% else %}<span>{{ partner.display_name }}</span>{% endif %}
+      {% else %}
+      <span>Аккаунт удалён</span>
+      {% endif %}
+    </div>
+    {% if partner %}
+    <details class="chat__menu">
+      <summary aria-label="Действия с чатом">{{ m.icon('more') }}</summary>
+      <div class="chat__menu-panel">
+        {% if is_open %}
+        <form method="post" action="/chats/{{ conversation.id }}/close" data-confirm="Завершить общение? Писать в этот чат больше будет нельзя, начать заново тоже не получится.">
+          {{ m.csrf_field() }}
+          <h3>Завершить общение</h3>
+          <p class="small muted mb-0">Чат закроется для обоих, переписка останется в истории.</p>
+          <button class="btn btn-secondary" type="submit">{{ m.icon('x') }} Завершить общение</button>
+        </form>
+        <hr class="sep mt-0 mb-0">
+        {% endif %}
+        <form method="post" action="/chats/{{ conversation.id }}/report">
+          {{ m.csrf_field() }}
+          <h3>Пожаловаться</h3>
+          <label class="visually-hidden" for="report-reason">Причина</label>
+          <select class="select" id="report-reason" name="reason" required>
+            <option value="">Причина жалобы</option>
+            {% for value, text in choices(enums.ReportReason) %}<option value="{{ value }}">{{ text }}</option>{% endfor %}
+          </select>
+          <label class="visually-hidden" for="report-comment">Комментарий</label>
+          <textarea class="textarea" id="report-comment" name="comment" rows="2" maxlength="{{ comment_max }}" placeholder="Комментарий (необязательно)"></textarea>
+          <button class="btn btn-danger-outline" type="submit">{{ m.icon('flag') }} Отправить жалобу</button>
+        </form>
+      </div>
+    </details>
+    {% endif %}
+  </header>
+
+  {% set flashes = pop_flashes() %}
+  {% for item in flashes %}
+  <div class="chat__notice" role="status">{{ m.icon('info') }}<span>{{ item.message }}</span></div>
+  {% endfor %}
+  {% if wali_watching %}
+  <div class="chat__notice"><span>👁 Вали подключён — переписка видна вали.</span></div>
+  {% endif %}
+  {% if partner is none %}
+  <div class="chat__notice chat__notice--closed">{{ m.icon('lock') }}<span>Собеседник удалил аккаунт. Переписка закрыта.</span></div>
+  {% elif conversation.closed_at %}
+  <div class="chat__notice chat__notice--closed">{{ m.icon('lock') }}<span>{{ label(conversation.close_reason) if conversation.close_reason else 'Общение завершено' }} · {{ conversation.closed_at|msk_date }}. Писать в этот чат нельзя.</span></div>
+  {% endif %}
+
+  <ol class="messages" id="messages" aria-label="Сообщения">
+    {% if has_more %}
+    <li class="messages__more js-only-block"><button class="btn btn-ghost" type="button" id="load-older" data-before-id="{{ messages[0].id }}">Показать ранние сообщения</button></li>
+    {% endif %}
+    {% if not messages %}
+    <li class="messages__empty" id="messages-empty">{% if is_open %}Отклик принят. Начните с приветствия — «Ассаляму алейкум». Помните о скромности и не просите денег.{% else %}Сообщений нет.{% endif %}</li>
+    {% endif %}
+    {% include "chats/_messages.html" %}
+  </ol>
+
+  {% if is_open %}
+  <form class="composer" id="composer" method="post" action="/chats/{{ conversation.id }}/messages">
+    {{ m.csrf_field() }}
+    <input type="hidden" name="after_id" value="{{ messages[-1].id if messages else 0 }}">
+    <div class="composer__field">
+      <label class="visually-hidden" for="composer-text">Сообщение</label>
+      <textarea id="composer-text" name="text" rows="1" maxlength="{{ message_max }}" required placeholder="Сообщение…" data-counter="{{ message_max }}" data-counter-from="1500" enterkeyhint="send"></textarea>
+    </div>
+    <button class="btn btn-primary" type="submit" aria-label="Отправить">{{ m.icon('send') }}</button>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

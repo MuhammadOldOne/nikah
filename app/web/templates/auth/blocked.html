@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Аккаунт заблокирован — Истина{% endblock %}
+{% block container_class %}container--narrow{% endblock %}
+{% block content %}
+<section class="card card-pad error-page">
+  <div class="empty__icon">{{ m.icon('lock') }}</div>
+  <h1>Аккаунт заблокирован</h1>
+  <p class="muted">Модератор заблокировал аккаунт за нарушение <a href="/rules">правил сообщества</a>. Анкета скрыта, переписки закрыты.</p>
+  <p class="muted">Удалить аккаунт и все данные можно в боте @{{ settings.BOT_USERNAME }} командой /delete.</p>
+  <a class="btn btn-secondary" href="/">На главную</a>
+</section>
+{% endblock %}

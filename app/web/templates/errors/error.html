@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — Истина{% endblock %}
+{% block container_class %}container--narrow{% endblock %}
+{% block content %}
+<section class="error-page" aria-labelledby="error-title">
+  <div class="error-page__code" aria-hidden="true">{{ status_code }}</div>
+  <h1 id="error-title">{{ title }}</h1>
+  <p class="lead">{{ message }}</p>
+  <p><a class="btn btn-primary" href="/">На главную</a> <a class="btn btn-ghost" href="/catalog">К анкетам</a></p>
+</section>
+{% endblock %}

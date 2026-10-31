@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+  <title>Безликий силуэт брата</title>
+  <rect width="120" height="120" fill="#dcebe3"/>
+  <path d="M16 120 C17 94 35 79 60 79 C85 79 103 94 104 120 Z" fill="#2b6d59"/>
+  <rect x="51" y="60" width="18" height="22" rx="7" fill="#327c66"/>
+  <circle cx="60" cy="47" r="21" fill="#327c66"/>
+  <path d="M39.4 42 C40.5 30 48.5 25 60 25 C71.5 25 79.5 30 80.6 42 C74 39.4 67.2 38.4 60 38.4 C52.8 38.4 46 39.4 39.4 42 Z" fill="#1f5747"/>
+</svg>

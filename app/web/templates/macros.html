@@ -1,0 +1,113 @@
+{# Shared UI macros. Icons are trusted constants (stroke icons on a 24×24 grid). #}
+{% set ICONS = {
+  "users": '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  "mail": '<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>',
+  "chat": '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>',
+  "user": '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+  "settings": '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
+  "logout": '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
+  "shield": '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+  "eye": '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+  "eye-off": '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>',
+  "lock": '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  "send": '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
+  "check": '<polyline points="20 6 9 17 4 12"/>',
+  "x": '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  "arrow-left": '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
+  "arrow-right": '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
+  "flag": '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
+  "filter": '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>',
+  "copy": '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  "pin": '<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>',
+  "heart": '<path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>',
+  "edit": '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>',
+  "trash": '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+  "clock": '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  "info": '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
+  "alert": '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  "external": '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>',
+  "bell": '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+  "database": '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>',
+  "file": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
+  "chevron-down": '<polyline points="6 9 12 15 18 9"/>',
+  "more": '<circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/>',
+  "family": '<circle cx="7" cy="6" r="3"/><circle cx="17" cy="6" r="3"/><path d="M2 21v-3a5 5 0 0 1 10 0v3"/><path d="M12 21v-3a5 5 0 0 1 10 0v3"/>',
+  "image-off": '<line x1="2" y1="2" x2="22" y2="22"/><path d="M10.41 10.41a2 2 0 1 1-2.83-2.83"/><line x1="13.5" y1="13.5" x2="6" y2="21"/><line x1="18" y1="12" x2="21" y2="15"/><path d="M3.59 3.59A1.99 1.99 0 0 0 3 5v14a2 2 0 0 0 2 2h14c.55 0 1.052-.22 1.41-.59"/><path d="M21 15V5a2 2 0 0 0-2-2H9"/>',
+  "link": '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+} %}
+
+{% macro icon(name, cls="") -%}
+<svg class="icon {{ cls }}" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{{ ICONS[name]|safe }}</svg>
+{%- endmacro %}
+
+{% macro brand_mark(cls="brand__mark") -%}
+<svg class="{{ cls }}" viewBox="0 0 32 32" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="8" y="8" width="16" height="16" rx="1.5"/><rect x="8" y="8" width="16" height="16" rx="1.5" transform="rotate(45 16 16)"/><circle class="brand__dot" cx="16" cy="16" r="2.6" stroke="none"/></svg>
+{%- endmacro %}
+
+{% macro avatar(gender, size="") -%}
+<span class="avatar {% if size %}avatar--{{ size }}{% endif %}"><img src="{{ static_url('img/avatar-' ~ ('female' if gender == 'female' else 'male') ~ '.svg') }}" alt="" width="96" height="96" loading="lazy"></span>
+{%- endmacro %}
+
+{% macro wali_badge(short=false) -%}
+<span class="pill pill--wali{% if short %} nowrap{% endif %}" title="Переписка видна вали (опекуну) этого человека">👁 Вали подключён{% if not short %} — переписка видна вали{% endif %}</span>
+{%- endmacro %}
+
+{% macro alert(level, title=none) -%}
+<div class="alert alert--{{ level }}" role="{{ 'alert' if level == 'error' else 'status' }}">
+  {{ icon({'success': 'check', 'warning': 'clock', 'error': 'alert'}.get(level, 'info')) }}
+  <div>{% if title %}<strong>{{ title }}</strong>{% endif %}{{ caller() if caller else '' }}</div>
+</div>
+{%- endmacro %}
+
+{% macro csrf_field() -%}
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+{%- endmacro %}
+
+{% macro field_error(errors, name) -%}
+{% if errors and errors.get(name) %}<p class="field-error" id="{{ name }}-error">{{ errors[name] }}</p>{% endif %}
+{%- endmacro %}
+
+{% macro describedby(errors, name, hint=false) -%}
+{% set ids = [] %}{% if hint %}{% set _ = ids.append(name ~ '-hint') %}{% endif %}{% if errors and errors.get(name) %}{% set _ = ids.append(name ~ '-error') %}{% endif %}{% if ids %} aria-describedby="{{ ids|join(' ') }}"{% endif %}{% if errors and errors.get(name) %} aria-invalid="true"{% endif %}
+{%- endmacro %}
+
+{# Radio chips for an enum. ``labels`` maps value -> {"male","female","neutral"} for gendered wording. #}
+{% macro chips(name, label_text, options, value, errors, required=false, gendered_labels=none, big=false) -%}
+<fieldset class="field{% if errors and errors.get(name) %} is-invalid{% endif %}" id="field-{{ name }}">
+  <legend>{{ label_text }}{% if required %} <span class="req" aria-hidden="true">*</span>{% endif %}</legend>
+  <div class="chips{% if big %} chips--big{% endif %}">
+    {% for opt_value, opt_label in options %}
+    <label class="chip">
+      <input type="radio" name="{{ name }}" value="{{ opt_value }}"{% if value == opt_value %} checked{% endif %}{% if required and loop.first %} required{% endif %}{% if errors and errors.get(name) %} aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}>
+      <span{% if gendered_labels and gendered_labels.get(opt_value) %} data-male="{{ gendered_labels[opt_value].male }}" data-female="{{ gendered_labels[opt_value].female }}" data-neutral="{{ gendered_labels[opt_value].neutral }}"{% endif %}>{{ opt_label }}</span>
+    </label>
+    {% endfor %}
+  </div>
+  {{ field_error(errors, name) }}
+</fieldset>
+{%- endmacro %}
+
+{# A profile card for the catalog. ``wali_ids`` is the set of user ids with an active guardian. #}
+{% macro profile_card(profile, wali_ids) -%}
+{% set g = profile.gender %}
+<article class="card pcard">
+  <div class="pcard__head">
+    {{ avatar(g) }}
+    <div>
+      <h3 class="pcard__title"><a href="/u/{{ profile.user_id }}">{{ profile.name }}, {{ profile.birth_year|age }}&nbsp;{{ plural(profile.birth_year|age, 'год', 'года', 'лет') }}</a></h3>
+      <div class="pcard__sub">{{ icon('pin', 'icon--sm') }}{{ profile.city }}</div>
+    </div>
+  </div>
+  <ul class="pcard__facts" aria-label="Коротко">
+    <li>{{ label(profile.marital_status, g) }}</li>
+    <li>{% if profile.children %}детей: {{ profile.children }}{% else %}без детей{% endif %}</li>
+    <li>{{ label(profile.education) }}{% if profile.education.value != 'academic_degree' %} образование{% endif %}</li>
+    <li>{{ label(profile.employment) }}</li>
+  </ul>
+  <p class="pcard__wishes"><b>Ищет:</b> {{ profile.wishes|truncate(140, true, '…', 0) }}</p>
+  <div class="pcard__foot">
+    {% if profile.user_id in wali_ids %}{{ wali_badge(short=true) }}{% else %}<span></span>{% endif %}
+    <span class="pcard__more" aria-hidden="true">{{ icon('arrow-right') }}</span>
+  </div>
+</article>
+{%- endmacro %}

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% import "profile/_fields.html" as f with context %}
+{% block title %}Редактирование анкеты — Истина{% endblock %}
+{% block container_class %}container--form{% endblock %}
+{% block content %}
+<a class="back-link" href="/me">{{ m.icon('arrow-left', 'icon--sm') }} Моя анкета</a>
+<div class="page-head">
+  <div>
+    <h1>Редактирование анкеты</h1>
+    <p class="muted">{{ gendered(gender, 'Брат', 'Сестра') }} · пол изменить нельзя.</p>
+  </div>
+</div>
+<div class="stack">
+  {% if errors %}
+  {% call m.alert('error', 'Проверьте анкету') %}<p>Некоторые поля заполнены неверно — они отмечены ниже.</p>{% endcall %}
+  {% elif settings.PREMODERATION %}
+  {% call m.alert('info') %}<p>После сохранения изменений анкета снова пройдёт модерацию и до проверки не будет видна в каталоге.</p>{% endcall %}
+  {% endif %}
+  <form class="stack" method="post" action="/me/edit">
+    {{ m.csrf_field() }}
+    <section class="card card-pad" aria-labelledby="s1"><h2 id="s1">Основное</h2><div class="form-grid">{{ f.section_basic('edit') }}</div></section>
+    <section class="card card-pad" aria-labelledby="s2"><h2 id="s2">Семья и жизнь</h2><div class="form-grid">{{ f.section_life() }}</div></section>
+    <section class="card card-pad" aria-labelledby="s3"><h2 id="s3">Пожелания</h2><div class="form-grid">{{ f.section_wishes() }}</div></section>
+    <div class="row row--between">
+      <a class="btn btn-ghost" href="/me">Отмена</a>
+      <button type="submit" class="btn btn-primary btn-lg">Сохранить</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

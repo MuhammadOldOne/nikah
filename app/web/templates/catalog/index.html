@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Анкеты — Истина{% endblock %}
+{% block content %}
+{% set seeking = own_profile.gender.opposite %}
+<div class="page-head">
+  <div>
+    <h1>Анкеты {{ gendered(seeking, 'братьев', 'сестёр') }}</h1>
+    <p class="muted">Без фото — только то, что человек рассказал о себе.</p>
+  </div>
+</div>
+
+{% if own_profile.status.value == 'pending' %}
+<div class="flashes">{% call m.alert('warning', 'Ваша анкета на модерации') %}<p>Смотреть анкеты можно уже сейчас, а откликаться — после публикации. Обычно проверка занимает до суток.</p>{% endcall %}</div>
+{% elif own_profile.status.value == 'hidden' %}
+<div class="flashes">{% call m.alert('info', 'Ваша анкета скрыта') %}<p>Другие вас не видят, и откликаться нельзя. <a href="/me">Показать анкету</a></p>{% endcall %}</div>
+{% elif own_profile.status.value == 'rejected' %}
+<div class="flashes">{% call m.alert('error', 'Ваша анкета отклонена') %}<p>{% if own_profile.moderation_note %}{{ own_profile.moderation_note }} {% endif %}<a href="/me/edit">Исправить анкету</a></p>{% endcall %}</div>
+{% endif %}
+
+<div class="catalog-layout">
+  <details class="card filters" data-open-wide{% if filters %} open{% endif %}>
+    <summary>{{ m.icon('filter') }} Фильтры{% if filters %} <span class="badge" aria-label="Активных фильтров: {{ filters|length }}">{{ filters|length }}</span>{% endif %}{{ m.icon('chevron-down', 'filters__toggle') }}</summary>
+    <form class="filters__body" id="filters" method="get" action="/catalog"
+      hx-get="/catalog" hx-target="#results" hx-swap="outerHTML" hx-push-url="true" hx-trigger="change, submit" hx-indicator="#results">
+      <fieldset class="field">
+        <legend>Возраст</legend>
+        <div class="age-range">
+          <label class="visually-hidden" for="f-age-min">Возраст от</label>
+          <input class="input" id="f-age-min" name="age_min" type="number" inputmode="numeric" min="18" max="80" placeholder="от 18" value="{{ filters.get('age_min', '') }}">
+          <label class="visually-hidden" for="f-age-max">Возраст до</label>
+          <input class="input" id="f-age-max" name="age_max" type="number" inputmode="numeric" min="18" max="80" placeholder="до 80" value="{{ filters.get('age_max', '') }}">
+        </div>
+      </fieldset>
+      <div class="field">
+        <label for="f-city">Город</label>
+        <input class="input" id="f-city" name="city" type="text" maxlength="60" list="catalog-cities" placeholder="Любой" value="{{ filters.get('city', '') }}">
+        <datalist id="catalog-cities">{% for c in ['Москва', 'Санкт-Петербург', 'Казань', 'Уфа', 'Махачкала', 'Грозный', 'Нальчик', 'Владикавказ', 'Назрань', 'Екатеринбург'] %}<option value="{{ c }}">{% endfor %}</datalist>
+      </div>
+      <div class="field">
+        <label for="f-marital">Семейное положение</label>
+        <select class="select" id="f-marital" name="marital_status">
+          <option value="">Любое</option>
+          {% for value, text in choices(enums.MaritalStatus, seeking) %}<option value="{{ value }}"{% if filters.get('marital_status') == value %} selected{% endif %}>{{ text }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="f-children">Дети</label>
+        <select class="select" id="f-children" name="has_children">
+          <option value="">Не важно</option>
+          <option value="false"{% if filters.get('has_children') == 'false' %} selected{% endif %}>Без детей</option>
+          <option value="true"{% if filters.get('has_children') == 'true' %} selected{% endif %}>Есть дети</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="f-education">Образование</label>
+        <select class="select" id="f-education" name="education">
+          <option value="">Любое</option>
+          {% for value, text in choices(enums.Education) %}<option value="{{ value }}"{% if filters.get('education') == value %} selected{% endif %}>{{ text }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary" type="submit">Показать</button>
+        <a class="btn btn-ghost" href="/catalog">Сбросить</a>
+      </div>
+    </form>
+  </details>
+
+  {% include "catalog/_results.html" %}
+</div>
+{% endblock %}

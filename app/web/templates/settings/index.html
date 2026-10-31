@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Настройки — Истина{% endblock %}
+{% block container_class %}container--narrow{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Настройки</h1>
+    <p class="muted">Вали, уведомления и аккаунт.</p>
+  </div>
+</div>
+
+<div class="settings-grid">
+  <section class="card card-pad" id="wali" aria-labelledby="wali-title">
+    <h2 id="wali-title">Вали</h2>
+    <p>Вали — ваш опекун: обычно отец, брат или другой близкий мужчина. Когда он подключён, бот @{{ settings.BOT_USERNAME }} присылает ему в Telegram копии ваших переписок.</p>
+    <details class="more">
+      <summary>Что получает вали {{ m.icon('chevron-down') }}</summary>
+      <div class="more__body">
+        <ul class="list-plain">
+          <li>копию каждого сообщения во всех ваших чатах — и ваших, и собеседника;</li>
+          <li>пометку, чья это переписка: имя собеседника и номер анкеты;</li>
+          <li>собеседники видят значок «👁 Вали подключён — переписка видна вали».</li>
+        </ul>
+        <p class="muted mb-0">Вали не получает доступа к вашему аккаунту и не может писать от вашего имени. Отключить его можно в любой момент.</p>
+      </div>
+    </details>
+
+    <div class="stack mt-16">
+      {% if guardian %}
+      {% call m.alert('success', 'Вали подключён') %}<p>{{ guardian.guardian.display_name if guardian.guardian else 'Вали' }} · с {{ guardian.linked_at|msk_date }}. Он получает копии всех ваших переписок.</p>{% endcall %}
+      <form method="post" action="/settings/wali/revoke" data-confirm="Отключить вали? Он перестанет получать копии переписки.">
+        {{ m.csrf_field() }}<button class="btn btn-danger-outline" type="submit">{{ m.icon('x') }} Отключить вали</button>
+      </form>
+      {% endif %}
+
+      {% if invite_link %}
+      <div class="stack-sm">
+        <h3>{{ 'Ссылка для нового вали' if guardian else 'Ссылка для вали' }}</h3>
+        <div class="copy-field">
+          <label class="visually-hidden" for="wali-link">Ссылка-приглашение для вали</label>
+          <input class="input" id="wali-link" type="text" value="{{ invite_link }}" readonly>
+          <button class="btn btn-secondary" type="button" data-copy="#wali-link">{{ m.icon('copy') }}<span class="copy-label">Копировать</span></button>
+        </div>
+        <p class="hint">Действует до {{ invite.expires_at|msk_date }}. Передайте её только своему вали.</p>
+        <ol class="list-plain">
+          <li>Отправьте ссылку вали — например, в Telegram.</li>
+          <li>Вали откроет её, нажмёт «Запустить» в боте и подтвердит, что становится вашим вали.</li>
+          <li>Здесь появится отметка «Вали подключён»{% if guardian %}, а прежний вали будет отключён{% endif %}.</li>
+        </ol>
+        <div class="row">
+          <form method="post" action="/settings/wali/invite">{{ m.csrf_field() }}<button class="btn btn-ghost" type="submit">Создать новую ссылку</button></form>
+          {% if not guardian %}
+          <form method="post" action="/settings/wali/revoke">{{ m.csrf_field() }}<button class="btn btn-ghost" type="submit">Отменить приглашение</button></form>
+          {% endif %}
+        </div>
+      </div>
+      {% else %}
+      <form method="post" action="/settings/wali/invite">
+        {{ m.csrf_field() }}
+        <button class="btn btn-primary" type="submit">{{ m.icon('link') }} {{ 'Создать ссылку для нового вали' if guardian else 'Создать ссылку для вали' }}</button>
+      </form>
+      {% endif %}
+    </div>
+  </section>
+
+  {% if wards %}
+  <section class="card card-pad" aria-labelledby="wards-title">
+    <h2 id="wards-title">Вы — вали</h2>
+    <p class="muted">Бот присылает вам копии переписок:</p>
+    <ul class="list-plain">
+      {% for link in wards %}<li>{{ link.ward.profile.name if link.ward.profile else link.ward.display_name }} (#{{ link.ward_user_id }}) — с {{ link.linked_at|msk_date }}</li>{% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  <section class="card card-pad" id="notifications" aria-labelledby="notify-title">
+    <h2 id="notify-title">Уведомления в Telegram</h2>
+    <p class="muted">Бот сообщает о новых откликах, ответах на них и сообщениях в чатах. Копии переписки для вали отправляются всегда.</p>
+    <form class="row row--between" method="post" action="/settings/notifications">
+      {{ m.csrf_field() }}
+      {% if user.notify_telegram %}
+      <span class="pill pill--success">{{ m.icon('bell', 'icon--sm') }} Включены</span>
+      <input type="hidden" name="enabled" value="0">
+      <button class="btn btn-secondary" type="submit">Выключить</button>
+      {% else %}
+      <span class="pill">{{ m.icon('bell', 'icon--sm') }} Выключены</span>
+      <input type="hidden" name="enabled" value="1">
+      <button class="btn btn-primary" type="submit">Включить</button>
+      {% endif %}
+    </form>
+  </section>
+
+  <section class="card card-pad" aria-labelledby="account-title">
+    <h2 id="account-title">Аккаунт</h2>
+    <dl class="facts">
+      <div><dt>Telegram</dt><dd>{{ ('@' ~ user.username) if user.username else (user.first_name or '—') }}</dd></div>
+      <div><dt>Номер анкеты</dt><dd>#{{ user.id }}</dd></div>
+      {% if user.consent_at %}<div><dt>Согласие на обработку данных</dt><dd>{{ user.consent_at|msk_date }} · <a href="/consent">текст</a></dd></div>{% endif %}
+    </dl>
+    <form method="post" action="/logout">{{ m.csrf_field() }}<button class="btn btn-ghost" type="submit">{{ m.icon('logout') }} Выйти</button></form>
+  </section>
+
+  {% with back = "/settings" %}{% include "partials/delete_account.html" %}{% endwith %}
+</div>
+{% endblock %}

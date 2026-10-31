@@ -10,3 +10,5 @@ __pycache__/
 *.sql.gz
 backups/
 node_modules/
+.ruff_cache/
+.mypy_cache/

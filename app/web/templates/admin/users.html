@@ -1,0 +1,46 @@
+{% extends "admin/base.html" %}
+{% block title %}Пользователи{% endblock %}
+{% block content %}
+<h1>Пользователи</h1>
+<form method="get" action="/admin/users" class="adm-search" role="search">
+  <label for="q">Найти по #id, Telegram ID или @username</label>
+  <div class="adm-search__row">
+    <input id="q" name="q" type="search" value="{{ q }}" maxlength="100" placeholder="#123, 123456789 или @username" autocomplete="off">
+    <button type="submit" class="adm-btn">Найти</button>
+  </div>
+</form>
+
+{% if invalid_query %}
+<p class="adm-flash adm-flash--error">Не понимаю запрос. Введите #id, числовой Telegram ID или @username.</p>
+{% elif q %}
+{% if users %}
+<div class="adm-scroll">
+<table class="adm-table adm-table--list">
+  <thead>
+    <tr>
+      <th scope="col">Пользователь</th>
+      <th scope="col">Telegram</th>
+      <th scope="col">Анкета</th>
+      <th scope="col">Регистрация</th>
+      <th scope="col">Последняя активность</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for user in users %}
+    <tr>
+      <td>{{ am.person(user) }}{% if is_admin(user) %} <span class="adm-tag">админ</span>{% endif %}</td>
+      <td>{% if user.username %}@{{ user.username }}<br>{% endif %}<span class="adm-muted">ID {{ user.telegram_id }}</span></td>
+      <td>{% if user.profile %}{{ am.profile_status(user.profile) }}{% else %}<span class="adm-muted">нет</span>{% endif %}</td>
+      <td>{{ user.created_at|msk }}</td>
+      <td>{{ user.last_seen_at|msk if user.last_seen_at else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if users|length >= limit %}<p class="adm-hint">Показаны первые {{ limit }}. Уточните запрос.</p>{% endif %}
+{% else %}
+<p class="adm-empty">Никого не нашли.</p>
+{% endif %}
+{% endif %}
+{% endblock %}

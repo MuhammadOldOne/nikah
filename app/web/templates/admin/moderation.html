@@ -1,0 +1,49 @@
+{% extends "admin/base.html" %}
+{% block title %}Модерация анкет{% endblock %}
+{% block content %}
+<h1>Модерация анкет <span class="adm-muted">{{ pager.total }}</span></h1>
+<p class="adm-hint">Сначала самые давние. Пока анкета на модерации, её не видно в каталоге. Решение сразу придёт автору в Telegram.</p>
+
+{% for profile in profiles %}
+<article class="adm-card" id="p{{ profile.user_id }}">
+  <header class="adm-card__head">
+    {% set age = profile.birth_year|age %}
+    <h2>{{ profile.name }}, {{ age }} {{ plural(age, 'год', 'года', 'лет') }} — {{ profile.city }}</h2>
+    <p class="adm-meta">
+      {{ am.person(profile.user) }} · {{ label(profile.gender) }}
+      · отправлена {{ profile.submitted_at|msk }}
+      {% if profile.created_at|msk != profile.submitted_at|msk %}· создана {{ profile.created_at|msk }}{% endif %}
+    </p>
+    {{ am.flags(profile.flag_reason) }}
+  </header>
+  {{ am.profile_card(profile) }}
+  <div class="adm-actions">
+    <form method="post" action="/admin/moderation/{{ profile.user_id }}/approve">
+      {{ am.csrf() }}{{ am.back() }}
+      <input type="hidden" name="version" value="{{ profile_version(profile) }}">
+      <button type="submit" class="adm-btn adm-btn--ok">Одобрить</button>
+    </form>
+    <details class="adm-confirm">
+      <summary class="adm-btn adm-btn--danger">Отклонить…</summary>
+      <form method="post" action="/admin/moderation/{{ profile.user_id }}/reject" class="adm-reject">
+        {{ am.csrf() }}{{ am.back() }}
+        <input type="hidden" name="version" value="{{ profile_version(profile) }}">
+        <fieldset>
+          <legend>Причина — её увидит автор анкеты</legend>
+          {% for title, text in reject_presets %}
+          <label class="adm-radio"><input type="radio" name="preset" value="{{ loop.index0 }}"{% if loop.first %} checked{% endif %}> <span><b>{{ title }}.</b> {{ text }}</span></label>
+          {% endfor %}
+          <label class="adm-block" for="note-{{ profile.user_id }}">Своя причина (если заполнена, заменяет выбранную)</label>
+          <textarea id="note-{{ profile.user_id }}" name="note" rows="2" maxlength="500"></textarea>
+        </fieldset>
+        <button type="submit" class="adm-btn adm-btn--danger">Отклонить анкету</button>
+      </form>
+    </details>
+  </div>
+</article>
+{% else %}
+<p class="adm-empty">Очередь пуста — все анкеты рассмотрены.</p>
+{% endfor %}
+
+{{ am.pager(pager) }}
+{% endblock %}
